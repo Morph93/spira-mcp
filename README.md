@@ -11,13 +11,18 @@ The official `mcp-server-spira` package has critical limitations:
 | Tasks filtered by their own release | No — filters via parent requirement's release, misses orphaned tasks | **Yes** — filters by the task's own `ReleaseId` field |
 | Pagination | Hardcoded 500 rows, silently drops data | **Proper** — loops until all results fetched |
 | Search/filter on artifacts | Only on "specification" tools | **All** list tools accept filters (release, status, priority, owner) |
-| Single-item retrieval | Only for products and releases | **All** artifact types |
+| Single-item retrieval | Only for products and releases | **All** artifact types (requirement, task, incident, test case, test run) |
 | Create/update artifacts | Only `create_build` and `record_test_run` | **Full CRUD** for requirements, tasks, incidents, test cases, test steps |
 | Per-step test results | Not supported | **Full support** — create run, fill per-step pass/fail + actual results |
-| Image embedding | Not supported | **`attach_image_to_field`** — inline images visible in Spira UI |
-| Artifact linking | Not supported | **`create_association`** — link any two artifacts (RQ↔TC, IN↔RQ, etc.) |
+| Image embedding | Not supported | **`attach_image_to_field`** — inline `<img>` tags visible in Spira UI |
+| Artifact linking (associations) | Not supported | **`create_association`** — link any two artifacts (RQ↔TC, IN↔RQ, IN↔TC, etc.) |
+| Document management | Not supported | **Upload, attach, list** documents on any artifact |
+| Test case folders | Not supported | **`list_test_folders`** — browse hierarchy, move TCs between folders |
+| Test step IDs in output | Steps shown as ordinals only (Step 1, 2, 3) | **`TestStepId`** shown per step — enables precise updates |
+| Release listing | No sorting, `active_only` hardcoded to true | **Sorted by date** (most recent first), all types mixed, configurable `active_only` and `limit` |
 | Retry logic | None | **3 retries** with backoff on 5xx and rate limits |
-| `release_id=None` bug | Passes literal `"None"` in URL | **Fixed** |
+| `release_id=None` bug | Passes literal `"None"` in URL | **Fixed** — omits parameter when not provided |
+| Task fetch endpoint | Uses `/tasks/new` with `creation_date=1900-01-01` | **Proper date**, with server-side search fallback |
 
 ## Installation
 
