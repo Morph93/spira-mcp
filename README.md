@@ -1,6 +1,6 @@
 # spira-mcp
 
-MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 38 tools.
+MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 54 tools.
 
 ## Why this exists
 
@@ -74,6 +74,19 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
     "allow": [
       "mcp__spira__list_products",
       "mcp__spira__get_product",
+      "mcp__spira__list_programs",
+      "mcp__spira__list_program_products",
+      "mcp__spira__list_milestones",
+      "mcp__spira__list_capabilities",
+      "mcp__spira__list_templates",
+      "mcp__spira__get_template",
+      "mcp__spira__list_artifact_types",
+      "mcp__spira__list_custom_properties",
+      "mcp__spira__get_my_tasks",
+      "mcp__spira__get_my_incidents",
+      "mcp__spira__get_my_requirements",
+      "mcp__spira__get_my_test_cases",
+      "mcp__spira__get_my_test_sets",
       "mcp__spira__list_releases",
       "mcp__spira__get_release",
       "mcp__spira__list_requirements",
@@ -109,6 +122,9 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
       "mcp__spira__create_association",
       "mcp__spira__list_associations",
       "mcp__spira__delete_association",
+      "mcp__spira__list_risks",
+      "mcp__spira__list_test_sets",
+      "mcp__spira__list_automation_hosts",
       "mcp__spira__create_build"
     ]
   },
@@ -117,11 +133,30 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 }
 ```
 
-## Available Tools (38)
+## Available Tools (54)
 
 ### Products
 - `list_products` — List all accessible products
 - `get_product` — Get product details by ID
+
+### Programs
+- `list_programs` — List all programs (groups of products)
+- `list_program_products` — List products belonging to a program
+- `list_milestones` — List milestones for a program
+- `list_capabilities` — List capabilities for a program
+
+### Templates & Configuration
+- `list_templates` — List all product templates
+- `get_template` — Get template details
+- `list_artifact_types` — List artifact types (requirement types, incident types, etc.) for a template — use to discover valid type IDs
+- `list_custom_properties` — List custom fields for all artifact types in a template
+
+### My Work
+- `get_my_tasks` — Tasks assigned to current user, across all products
+- `get_my_incidents` — Incidents assigned to current user, across all products
+- `get_my_requirements` — Requirements assigned to current user, across all products
+- `get_my_test_cases` — Test cases assigned to current user, across all products
+- `get_my_test_sets` — Test sets assigned to current user, across all products
 
 ### Releases / Sprints
 - `list_releases` — List releases sorted by date (all types mixed), with `limit` param
@@ -146,6 +181,9 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 - `create_incident` — Create new bug with type, priority, severity, owner, release
 - `update_incident` — Update status, priority, assign, set resolved release
 
+### Risks
+- `list_risks` — List risks for a product, optionally filtered by release
+
 ### Test Cases
 - `list_test_cases` — List with optional release filter
 - `get_test_case` — Get TC with test steps (shows `TestStepId` per step)
@@ -157,6 +195,9 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 - `create_test_step` — Add a new step to a test case
 - `update_test_step` — Update description, expected result, sample data
 - `delete_test_step` — Remove a step from a test case
+
+### Test Sets
+- `list_test_sets` — List all test sets for a product
 
 ### Test Runs
 - `list_test_runs` — List recent runs sorted by date
@@ -175,6 +216,9 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 - `create_association` — Link any two artifacts (RQ↔TC, IN↔RQ, IN↔TC, etc.)
 - `list_associations` — See existing links on an artifact
 - `delete_association` — Remove a link
+
+### Automation Hosts
+- `list_automation_hosts` — List automation hosts configured for a product
 
 ### Builds
 - `create_build` — Create a build entry for a release with commit references
