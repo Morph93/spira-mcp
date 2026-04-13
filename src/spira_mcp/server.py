@@ -19,7 +19,7 @@ from spira_mcp import formatters
 
 mcp = FastMCP(
     "spira-mcp",
-    description="MCP server for Inflectra Spira with proper task filtering and pagination",
+    instructions="MCP server for Inflectra Spira with proper task filtering and pagination",
 )
 
 
