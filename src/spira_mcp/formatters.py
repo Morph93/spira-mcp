@@ -302,7 +302,8 @@ def format_test_case(tc, steps=None):
     if steps:
         parts.append("\n## Test Steps\n")
         for i, s in enumerate(steps, 1):
-            parts.append(f"### Step {i}: {s.get('Description', '')}\n")
+            step_id = s.get("TestStepId", "?")
+            parts.append(f"### Step {i} (TestStepId: {step_id}): {s.get('Description', '')}\n")
             if s.get("ExpectedResult"):
                 parts.append(f"**Expected Result:** {s['ExpectedResult']}\n")
             if s.get("SampleData"):
@@ -327,4 +328,126 @@ def format_test_runs(runs):
             f"**Date:** {(r.get('EndDate') or '')[:19]}\n"
             f"**Runner:** {r.get('RunnerName', '?')}\n"
         )
+    return "\n".join(lines)
+
+
+def format_test_run(r):
+    if not r:
+        return "Test run not found."
+    exec_status = EXECUTION_STATUSES.get(r.get("ExecutionStatusId"), "?")
+    parts = [
+        f"# Test Run #{r.get('TestRunId')} — {r.get('Name', '?')}\n\n",
+        f"**Status:** {exec_status}\n",
+        f"**Test Case:** TC:{r.get('TestCaseId', '?')}\n",
+        f"**Type:** {'Manual' if r.get('TestRunTypeId') == 1 else 'Automated'}\n",
+        f"**Tester:** {r.get('TesterName', '?')}\n",
+        f"**Release:** {r.get('ReleaseVersionNumber', '?')}\n",
+        f"**Start:** {(r.get('StartDate') or '')[:19]}\n",
+        f"**End:** {(r.get('EndDate') or '')[:19]}\n",
+    ]
+    steps = r.get("TestRunSteps") or []
+    if steps:
+        parts.append(f"\n## Test Run Steps ({len(steps)} steps)\n")
+        for s in steps:
+            step_status = EXECUTION_STATUSES.get(s.get("ExecutionStatusId"), "?")
+            pos = s.get("Position", "?")
+            parts.append(
+                f"### Step {pos} (TestRunStepId: {s.get('TestRunStepId', '?')})\n"
+                f"**Status:** {step_status}\n"
+                f"**Description:** {s.get('Description', '')}\n"
+                f"**Expected Result:** {s.get('ExpectedResult', '')}\n"
+                f"**Actual Result:** {s.get('ActualResult', '')}\n"
+                f"**Sample Data:** {s.get('SampleData', '')}\n"
+            )
+    return "".join(parts)
+
+
+def format_document(d):
+    if not d:
+        return "Document not found."
+    return (
+        f"# Document [DC:{d.get('AttachmentId', '?')}] — {d.get('FilenameOrUrl', '?')}\n\n"
+        f"**Description:** {d.get('Description', '')}\n"
+        f"**Size:** {d.get('Size', '?')} bytes\n"
+        f"**Author:** {d.get('AuthorName', '?')}\n"
+        f"**Uploaded:** {(d.get('UploadDate') or '')[:19]}\n"
+        f"**Version:** {d.get('CurrentVersion', '')}\n"
+    )
+
+
+def format_documents(docs):
+    if not docs:
+        return "No documents found."
+    lines = [f"# Documents ({len(docs)} total)\n"]
+    for d in docs:
+        lines.append(
+            f"- **DC:{d.get('AttachmentId', '?')}** — {d.get('FilenameOrUrl', '?')} "
+            f"({d.get('Size', '?')} bytes, {(d.get('UploadDate') or '')[:10]})\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Test Case Folders
+# ──────────────────────────────────────────────
+
+def format_test_folders(folders):
+    if not folders:
+        return "No test case folders found."
+    lines = ["# Test Case Folders\n"]
+
+    # Build parent-child lookup for indentation
+    by_id = {f.get("TestCaseFolderId"): f for f in folders}
+
+    def _depth(folder):
+        d = 0
+        parent = folder.get("ParentTestCaseFolderId")
+        while parent and parent in by_id and d < 10:
+            d += 1
+            parent = by_id[parent].get("ParentTestCaseFolderId")
+        return d
+
+    for f in folders:
+        indent = "  " * _depth(f)
+        count = f.get("CountTestCases", 0)
+        lines.append(
+            f"{indent}- **Folder #{f.get('TestCaseFolderId', '?')}** — {f.get('Name', '?')} "
+            f"({count} test cases)\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Associations
+# ──────────────────────────────────────────────
+
+ARTIFACT_TYPE_NAMES = {
+    1: "Requirement", 2: "Test Case", 3: "Incident", 4: "Release",
+    5: "Test Run", 6: "Task", 7: "Test Step", 8: "Test Set",
+    9: "Automation Host", 13: "Document", 14: "Risk",
+}
+
+LINK_TYPE_NAMES = {
+    1: "Related To", 2: "Depends On", 3: "Is Depended On By",
+}
+
+
+def format_associations(associations):
+    if not associations:
+        return "No associations found."
+    lines = [f"# Associations ({len(associations)} total)\n"]
+    for a in associations:
+        src_type = ARTIFACT_TYPE_NAMES.get(a.get("SourceArtifactTypeId"), "?")
+        dest_type = a.get("DestArtifactTypeName") or ARTIFACT_TYPE_NAMES.get(a.get("DestArtifactTypeId"), "?")
+        link_type = a.get("ArtifactLinkTypeName") or LINK_TYPE_NAMES.get(a.get("ArtifactLinkTypeId"), "?")
+        lines.append(
+            f"- **Link #{a.get('ArtifactLinkId', '?')}** — "
+            f"{src_type} #{a.get('SourceArtifactId', '?')} → "
+            f"{dest_type} #{a.get('DestArtifactId', '?')} "
+            f"({a.get('DestArtifactName', '')})\n"
+            f"  **Type:** {link_type}"
+        )
+        if a.get("Comment"):
+            lines.append(f" | **Comment:** {a['Comment']}")
+        lines.append("\n")
     return "\n".join(lines)

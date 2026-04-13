@@ -205,6 +205,34 @@ class SpiraClient:
     def get_requirement_steps(self, product_id, requirement_id):
         return self._get(f"projects/{product_id}/requirements/{requirement_id}/steps") or []
 
+    def create_requirement(self, product_id, name, description="", requirement_type_id=None,
+                           importance_id=None, owner_id=None, release_id=None,
+                           parent_requirement_id=None):
+        body = {"Name": name, "Description": description}
+        if requirement_type_id is not None:
+            body["RequirementTypeId"] = requirement_type_id
+        if importance_id is not None:
+            body["ImportanceId"] = importance_id
+        if owner_id is not None:
+            body["OwnerId"] = owner_id
+        if release_id is not None:
+            body["ReleaseId"] = release_id
+        if parent_requirement_id is not None:
+            # Insert as child of specified requirement
+            return self._post(
+                f"projects/{product_id}/requirements/{parent_requirement_id}", body=body)
+        return self._post(f"projects/{product_id}/requirements", body=body)
+
+    def update_requirement(self, product_id, requirement_id, **updates):
+        """Update a requirement. GETs current state first for concurrency, merges updates, PUTs back."""
+        current = self.get_requirement(product_id, requirement_id)
+        if not current:
+            raise SpiraApiError(404, f"Requirement {requirement_id} not found", "")
+        for key, value in updates.items():
+            if value is not None:
+                current[key] = value
+        return self._put(f"projects/{product_id}/requirements", body=current)
+
     # ──────────────────────────────────────────────
     #  Tasks — THE KEY FIX
     # ──────────────────────────────────────────────
@@ -278,6 +306,32 @@ class SpiraClient:
         filters = self._build_filters(ReleaseId=release_id, TaskStatusId=status_id)
         return self._post(f"projects/{product_id}/tasks/count", body=filters or [])
 
+    def create_task(self, product_id, name, description="", task_status_id=1,
+                    task_priority_id=None, owner_id=None, release_id=None,
+                    requirement_id=None, estimated_effort=None):
+        body = {"Name": name, "Description": description, "TaskStatusId": task_status_id}
+        if task_priority_id is not None:
+            body["TaskPriorityId"] = task_priority_id
+        if owner_id is not None:
+            body["OwnerId"] = owner_id
+        if release_id is not None:
+            body["ReleaseId"] = release_id
+        if requirement_id is not None:
+            body["RequirementId"] = requirement_id
+        if estimated_effort is not None:
+            body["EstimatedEffort"] = estimated_effort
+        return self._post(f"projects/{product_id}/tasks", body=body)
+
+    def update_task(self, product_id, task_id, **updates):
+        """Update a task. GETs current state first for concurrency, merges updates, PUTs back."""
+        current = self.get_task(product_id, task_id)
+        if not current:
+            raise SpiraApiError(404, f"Task {task_id} not found", "")
+        for key, value in updates.items():
+            if value is not None:
+                current[key] = value
+        return self._put(f"projects/{product_id}/tasks", body=current)
+
     # ──────────────────────────────────────────────
     #  Incidents
     # ──────────────────────────────────────────────
@@ -306,6 +360,32 @@ class SpiraClient:
     def get_incident(self, product_id, incident_id):
         return self._get(f"projects/{product_id}/incidents/{incident_id}")
 
+    def create_incident(self, product_id, name, description="", incident_type_id=None,
+                        priority_id=None, severity_id=None, owner_id=None,
+                        detected_release_id=None):
+        body = {"Name": name, "Description": description}
+        if incident_type_id is not None:
+            body["IncidentTypeId"] = incident_type_id
+        if priority_id is not None:
+            body["PriorityId"] = priority_id
+        if severity_id is not None:
+            body["SeverityId"] = severity_id
+        if owner_id is not None:
+            body["OwnerId"] = owner_id
+        if detected_release_id is not None:
+            body["DetectedReleaseId"] = detected_release_id
+        return self._post(f"projects/{product_id}/incidents", body=body)
+
+    def update_incident(self, product_id, incident_id, **updates):
+        """Update an incident. GETs current state first for concurrency, merges updates, PUTs back."""
+        current = self.get_incident(product_id, incident_id)
+        if not current:
+            raise SpiraApiError(404, f"Incident {incident_id} not found", "")
+        for key, value in updates.items():
+            if value is not None:
+                current[key] = value
+        return self._put(f"projects/{product_id}/incidents", body=current)
+
     # ──────────────────────────────────────────────
     #  Test Cases
     # ──────────────────────────────────────────────
@@ -326,6 +406,71 @@ class SpiraClient:
         """Uses the dedicated /releases/{id}/test-cases sub-resource endpoint."""
         return self._get(f"projects/{product_id}/releases/{release_id}/test-cases") or []
 
+    def create_test_case(self, product_id, name, description="", test_case_type_id=None,
+                         test_case_priority_id=None, owner_id=None, test_case_folder_id=None,
+                         estimated_duration=None, tags=""):
+        body = {"Name": name, "Description": description, "TestCaseStatusId": 0}
+        if test_case_type_id is not None:
+            body["TestCaseTypeId"] = test_case_type_id
+        if test_case_priority_id is not None:
+            body["TestCasePriorityId"] = test_case_priority_id
+        if owner_id is not None:
+            body["OwnerId"] = owner_id
+        if test_case_folder_id is not None:
+            body["TestCaseFolderId"] = test_case_folder_id
+        if estimated_duration is not None:
+            body["EstimatedDuration"] = estimated_duration
+        if tags:
+            body["Tags"] = tags
+        return self._post(f"projects/{product_id}/test-cases", body=body)
+
+    def update_test_case(self, product_id, test_case_id, **updates):
+        """Update a test case. GETs current state first for ConcurrencyDate.
+
+        Merges `updates` into the existing object and PUTs the result.
+        Returns the updated test case.
+        """
+        current = self.get_test_case(product_id, test_case_id)
+        if not current:
+            raise SpiraApiError(404, f"Test case {test_case_id} not found", "")
+
+        # Merge updates into current object
+        for key, value in updates.items():
+            if value is not None:
+                current[key] = value
+
+        return self._put(f"projects/{product_id}/test-cases", body=current)
+
+    def update_test_step(self, product_id, test_case_id, test_step_id, **updates):
+        """Update a single test step. GETs current state first for ConcurrencyDate.
+
+        Merges `updates` into the existing step and PUTs the result.
+        Returns the updated test step.
+        """
+        steps = self.get_test_steps(product_id, test_case_id)
+        current = next((s for s in steps if s.get("TestStepId") == test_step_id), None)
+        if not current:
+            raise SpiraApiError(404, f"Test step {test_step_id} not found in TC:{test_case_id}", "")
+
+        # Merge updates into current step
+        for key, value in updates.items():
+            if value is not None:
+                current[key] = value
+
+        return self._put(f"projects/{product_id}/test-cases/{test_case_id}/test-steps", body=current)
+
+    def create_test_step(self, product_id, test_case_id, description,
+                         expected_result="", sample_data=""):
+        body = {
+            "Description": description,
+            "ExpectedResult": expected_result,
+            "SampleData": sample_data,
+        }
+        return self._post(f"projects/{product_id}/test-cases/{test_case_id}/test-steps", body=body)
+
+    def delete_test_step(self, product_id, test_case_id, test_step_id):
+        return self._request("DELETE", f"projects/{product_id}/test-cases/{test_case_id}/test-steps/{test_step_id}")
+
     # ──────────────────────────────────────────────
     #  Test Runs
     # ──────────────────────────────────────────────
@@ -336,8 +481,31 @@ class SpiraClient:
             params={"sort_field": "EndDate", "sort_direction": "DESC"},
         )
 
+    def get_test_run(self, product_id, test_run_id):
+        """Get a manual test run with its steps included."""
+        return self._get(f"projects/{product_id}/test-runs/{test_run_id}/manual")
+
+    def create_test_runs(self, product_id, test_case_ids, release_id=None):
+        """Create test run shells from test case IDs. Returns runs with steps pre-populated."""
+        params = {}
+        if release_id is not None:
+            params["release_id"] = release_id
+        return self._post(f"projects/{product_id}/test-runs/create", body=test_case_ids, params=params)
+
+    def save_test_runs(self, product_id, test_runs, end_date):
+        """Save test runs with step-level results.
+
+        test_runs: array of RemoteManualTestRun objects with TestRunSteps populated.
+        end_date: ISO datetime string for the run completion time.
+        """
+        return self._put(
+            f"projects/{product_id}/test-runs",
+            body=test_runs,
+        )
+
     def record_test_run(self, product_id, test_case_id, execution_status_id,
-                        test_name, short_message="", long_message="", error_count=0):
+                        test_name, short_message="", long_message="", error_count=0,
+                        release_id=None, test_set_id=None, build_id=None):
         body = [{
             "TestCaseId": test_case_id,
             "ExecutionStatusId": execution_status_id,
@@ -347,7 +515,72 @@ class SpiraClient:
             "CountFailures": error_count,
             "RunnerTestName": test_name,
         }]
+        if release_id is not None:
+            body[0]["ReleaseId"] = release_id
+        if test_set_id is not None:
+            body[0]["TestSetId"] = test_set_id
+        if build_id is not None:
+            body[0]["BuildId"] = build_id
         return self._post(f"projects/{product_id}/test-runs/record", body=body)
+
+    # ──────────────────────────────────────────────
+    #  Documents & Attachments
+    # ──────────────────────────────────────────────
+
+    def upload_document(self, product_id, filename, binary_data_base64, description="",
+                        folder_id=None):
+        """Upload a file to Spira. binary_data_base64 is the file content as base64 string."""
+        import base64
+        # The API expects an array of byte values, but accepts base64 in the JSON
+        body = {
+            "BinaryData": binary_data_base64,
+            "FilenameOrUrl": filename,
+            "Description": description,
+            "AttachmentTypeId": 1,  # File
+        }
+        if folder_id is not None:
+            body["ProjectAttachmentFolderId"] = folder_id
+        return self._post(f"projects/{product_id}/documents/file", body=body)
+
+    def attach_document_to_artifact(self, product_id, artifact_type_id, artifact_id, document_id):
+        """Attach an existing document to an artifact."""
+        return self._post(
+            f"projects/{product_id}/artifact-types/{artifact_type_id}/artifacts/{artifact_id}/documents/{document_id}")
+
+    def get_artifact_documents(self, product_id, artifact_type_id, artifact_id):
+        """List documents attached to an artifact."""
+        return self._get(
+            f"projects/{product_id}/artifact-types/{artifact_type_id}/artifacts/{artifact_id}/documents") or []
+
+    # ──────────────────────────────────────────────
+    #  Test Case Folders
+    # ──────────────────────────────────────────────
+
+    def get_test_case_folders(self, product_id):
+        return self._get(f"projects/{product_id}/test-case-folders") or []
+
+    # ──────────────────────────────────────────────
+    #  Associations
+    # ──────────────────────────────────────────────
+
+    def create_association(self, product_id, source_artifact_type_id, source_artifact_id,
+                           dest_artifact_type_id, dest_artifact_id, artifact_link_type_id=1,
+                           comment=""):
+        body = {
+            "SourceArtifactId": source_artifact_id,
+            "SourceArtifactTypeId": source_artifact_type_id,
+            "DestArtifactId": dest_artifact_id,
+            "DestArtifactTypeId": dest_artifact_type_id,
+            "ArtifactLinkTypeId": artifact_link_type_id,
+            "Comment": comment,
+        }
+        return self._post(f"projects/{product_id}/associations", body=body)
+
+    def get_associations(self, product_id, artifact_type_id, artifact_id):
+        return self._get(f"projects/{product_id}/associations/{artifact_type_id}/{artifact_id}") or []
+
+    def delete_association(self, product_id, artifact_link_id):
+        return self._request("DELETE", f"projects/{product_id}/associations/{artifact_link_id}")
 
     # ──────────────────────────────────────────────
     #  Builds
