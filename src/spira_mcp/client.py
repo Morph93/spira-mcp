@@ -161,8 +161,13 @@ class SpiraClient:
     #  Releases
     # ──────────────────────────────────────────────
 
-    def get_releases(self, product_id, active_only=True):
-        return self._get(f"projects/{product_id}/releases", {"active_only": str(active_only).lower()}) or []
+    def get_releases(self, product_id, active_only=True, release_type_id=None):
+        releases = self._get(f"projects/{product_id}/releases", {"active_only": str(active_only).lower()}) or []
+        if release_type_id is not None:
+            releases = [r for r in releases if r.get("ReleaseTypeId") == release_type_id]
+        # Sort by StartDate descending (most recent first)
+        releases.sort(key=lambda r: r.get("StartDate") or "", reverse=True)
+        return releases
 
     def get_release(self, product_id, release_id):
         return self._get(f"projects/{product_id}/releases/{release_id}")

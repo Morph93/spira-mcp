@@ -68,10 +68,25 @@ def get_product(product_id: int) -> str:
 # ──────────────────────────────────────────────
 
 @mcp.tool()
-def list_releases(product_id: int, active_only: bool = True) -> str:
-    """List releases/sprints for a product. Set active_only=False to include completed/closed releases."""
+def list_releases(
+    product_id: int,
+    active_only: bool = False,
+    limit: int | None = None,
+) -> str:
+    """List releases/sprints for a product, sorted by start date (most recent first).
+
+    Returns all release types (major, minor, sprints, phases) mixed together, sorted
+    by most recent first. The words "sprints", "releases", and "iterations" are
+    interchangeable — always return all types sorted by date.
+
+    Filters (all optional):
+    - active_only: False (default) = all releases. True = only active/in-progress
+    - limit: Return only the N most recent releases
+    """
     client = _get_client()
     releases = client.get_releases(product_id, active_only=active_only)
+    if limit is not None:
+        releases = releases[:limit]
     return formatters.format_releases(releases)
 
 
