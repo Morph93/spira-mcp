@@ -1333,10 +1333,97 @@ def create_build(
 
 
 # ──────────────────────────────────────────────
+#  Tool filtering
+# ──────────────────────────────────────────────
+
+TOOL_PRESETS = {
+    "minimal": [
+        "list_products", "get_product",
+        "list_releases", "get_release",
+        "list_requirements", "get_requirement",
+        "list_tasks", "get_task",
+        "list_incidents", "get_incident",
+        "list_test_cases", "get_test_case",
+    ],
+    "read_only": [
+        "list_products", "get_product",
+        "list_programs", "list_program_products", "list_milestones", "list_capabilities",
+        "list_templates", "get_template", "list_artifact_types", "list_custom_properties",
+        "get_my_tasks", "get_my_incidents", "get_my_requirements", "get_my_test_cases", "get_my_test_sets",
+        "list_releases", "get_release",
+        "list_requirements", "get_requirement",
+        "list_tasks", "get_task", "count_tasks",
+        "list_incidents", "get_incident",
+        "list_test_cases", "get_test_case", "list_test_folders",
+        "list_test_runs", "get_test_run",
+        "list_risks", "list_test_sets", "list_automation_hosts",
+        "list_documents", "list_associations",
+    ],
+    "dev": [
+        "list_products", "get_product",
+        "get_my_tasks", "get_my_incidents", "get_my_requirements",
+        "list_releases", "get_release",
+        "list_requirements", "get_requirement",
+        "list_tasks", "get_task", "count_tasks", "update_task",
+        "list_incidents", "get_incident", "create_incident", "update_incident",
+        "list_risks",
+        "list_associations", "create_association",
+        "list_artifact_types", "list_custom_properties",
+    ],
+    "qa": [
+        "list_products", "get_product",
+        "get_my_tasks", "get_my_incidents", "get_my_test_cases", "get_my_test_sets",
+        "list_releases", "get_release",
+        "list_requirements", "get_requirement",
+        "list_tasks", "get_task", "count_tasks", "update_task",
+        "list_incidents", "get_incident", "create_incident", "update_incident",
+        "list_test_cases", "get_test_case", "create_test_case", "update_test_case", "list_test_folders",
+        "create_test_step", "update_test_step", "delete_test_step",
+        "list_test_runs", "get_test_run", "create_test_run", "save_test_run_results", "record_test_run",
+        "list_test_sets",
+        "upload_document", "attach_document", "attach_image_to_field", "list_documents",
+        "create_association", "list_associations", "delete_association",
+        "list_artifact_types", "list_custom_properties",
+    ],
+    "full": None,  # No filtering — all tools enabled
+}
+
+
+def _apply_tool_filter():
+    """Filter tools based on SPIRA_MCP_TOOLS environment variable.
+
+    Supports:
+    - Preset names: "minimal", "read_only", "qa", "full"
+    - Comma-separated tool names: "list_products,get_product,list_tasks"
+    - Not set or "full": all tools enabled (default)
+    """
+    tools_config = os.environ.get("SPIRA_MCP_TOOLS", "").strip()
+    if not tools_config or tools_config == "full":
+        return
+
+    # Check if it's a preset
+    if tools_config in TOOL_PRESETS:
+        allowed = TOOL_PRESETS[tools_config]
+        if allowed is None:
+            return  # "full" preset
+        allowed = set(allowed)
+    else:
+        # Treat as comma-separated tool names
+        allowed = set(t.strip() for t in tools_config.split(",") if t.strip())
+
+    # Remove tools not in the allowed set
+    all_tools = list(mcp._tool_manager._tools.keys())
+    for name in all_tools:
+        if name not in allowed:
+            del mcp._tool_manager._tools[name]
+
+
+# ──────────────────────────────────────────────
 #  Entry point
 # ──────────────────────────────────────────────
 
 def main():
+    _apply_tool_filter()
     mcp.run()
 
 

@@ -66,6 +66,49 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 }
 ```
 
+### Tool Filtering (optional)
+
+By default all 54 tools are exposed. To limit which tools are available, set the `SPIRA_MCP_TOOLS` environment variable to a **preset name** or a **comma-separated list of tool names**.
+
+**Presets:**
+
+| Preset | Tools | Description |
+|--------|:-----:|-------------|
+| `full` | 54 | All tools (default) |
+| `qa` | 41 | QA-focused: test cases, test runs, incidents, documents, associations |
+| `dev` | 22 | Dev-focused: tasks, requirements, incidents, risks, associations |
+| `read_only` | 34 | All list/get tools, no create/update/delete |
+| `minimal` | 12 | Just list/get for core artifacts (products, releases, requirements, tasks, incidents, test cases) |
+
+**Using a preset:**
+
+```json
+{
+  "mcpServers": {
+    "spira": {
+      "command": "python3",
+      "args": ["-m", "spira_mcp"],
+      "env": {
+        "INFLECTRA_SPIRA_BASE_URL": "https://your-instance.spiraservice.net",
+        "INFLECTRA_SPIRA_USERNAME": "your.email@company.com",
+        "INFLECTRA_SPIRA_API_KEY": "{YOUR-API-KEY-GUID}",
+        "SPIRA_MCP_TOOLS": "qa"
+      }
+    }
+  }
+}
+```
+
+**Using a custom list:**
+
+```json
+{
+  "env": {
+    "SPIRA_MCP_TOOLS": "list_products,get_product,list_tasks,get_task,list_incidents,get_incident"
+  }
+}
+```
+
 ### Pre-authorize tools (`.claude/settings.local.json`)
 
 ```json
