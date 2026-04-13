@@ -64,6 +64,130 @@ def get_product(product_id: int) -> str:
 
 
 # ──────────────────────────────────────────────
+#  Programs
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_programs() -> str:
+    """List all programs (groups of products) in the Spira instance."""
+    client = _get_client()
+    programs = client.get_programs()
+    return formatters.format_programs(programs)
+
+
+@mcp.tool()
+def list_program_products(program_id: int) -> str:
+    """List all products belonging to a specific program."""
+    client = _get_client()
+    products = client.get_program_products(program_id)
+    return formatters.format_products(products)
+
+
+@mcp.tool()
+def list_milestones(program_id: int) -> str:
+    """List milestones for a program."""
+    client = _get_client()
+    milestones = client.get_milestones(program_id)
+    return formatters.format_milestones(milestones)
+
+
+@mcp.tool()
+def list_capabilities(program_id: int) -> str:
+    """List capabilities for a program."""
+    client = _get_client()
+    capabilities = client.get_capabilities(program_id)
+    return formatters.format_capabilities(capabilities)
+
+
+# ──────────────────────────────────────────────
+#  Templates
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_templates() -> str:
+    """List all product templates in the Spira instance."""
+    client = _get_client()
+    templates = client.get_product_templates()
+    return formatters.format_templates(templates)
+
+
+@mcp.tool()
+def get_template(template_id: int) -> str:
+    """Get details of a specific product template."""
+    client = _get_client()
+    template = client.get_product_template(template_id)
+    return formatters.format_template(template)
+
+
+@mcp.tool()
+def list_artifact_types(template_id: int) -> str:
+    """List all artifact types (requirement types, incident types, task types, etc.) for a template.
+
+    Use this to discover valid type IDs for create/update tools.
+    Get the template_id from the product details (get_product) or list_templates.
+    """
+    client = _get_client()
+    types = client.get_artifact_types(template_id)
+    return formatters.format_artifact_types(types)
+
+
+@mcp.tool()
+def list_custom_properties(template_id: int) -> str:
+    """List all custom properties (custom fields) for all artifact types in a template.
+
+    Shows field names, property numbers (Custom_01, Custom_02, etc.), and types.
+    Use this to discover custom field IDs for filtering or updating artifacts.
+    """
+    client = _get_client()
+    props = client.get_custom_properties(template_id)
+    return formatters.format_custom_properties(props)
+
+
+# ──────────────────────────────────────────────
+#  My Work
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def get_my_tasks() -> str:
+    """Get all tasks assigned to the current user, across all products."""
+    client = _get_client()
+    tasks = client.get_my_tasks()
+    return formatters.format_my_tasks(tasks)
+
+
+@mcp.tool()
+def get_my_incidents() -> str:
+    """Get all incidents assigned to the current user, across all products."""
+    client = _get_client()
+    incidents = client.get_my_incidents()
+    return formatters.format_my_incidents(incidents)
+
+
+@mcp.tool()
+def get_my_requirements() -> str:
+    """Get all requirements assigned to the current user, across all products."""
+    client = _get_client()
+    requirements = client.get_my_requirements()
+    return formatters.format_my_requirements(requirements)
+
+
+@mcp.tool()
+def get_my_test_cases() -> str:
+    """Get all test cases assigned to the current user, across all products."""
+    client = _get_client()
+    test_cases = client.get_my_test_cases()
+    return formatters.format_my_test_cases(test_cases)
+
+
+@mcp.tool()
+def get_my_test_sets() -> str:
+    """Get all test sets assigned to the current user, across all products."""
+    client = _get_client()
+    test_sets = client.get_my_test_sets()
+    return formatters.format_my_test_sets(test_sets)
+
+
+# ──────────────────────────────────────────────
 #  Releases / Sprints
 # ──────────────────────────────────────────────
 
@@ -1141,6 +1265,45 @@ def delete_association(product_id: int, artifact_link_id: int) -> str:
     client = _get_client()
     client.delete_association(product_id, artifact_link_id)
     return f"Association (Link #{artifact_link_id}) deleted."
+
+
+# ──────────────────────────────────────────────
+#  Risks
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_risks(product_id: int, release_id: int | None = None) -> str:
+    """List risks for a product, optionally filtered by release.
+
+    - release_id: Filter risks assigned to this release
+    """
+    client = _get_client()
+    risks = client.get_risks(product_id, release_id=release_id)
+    return formatters.format_risks(risks)
+
+
+# ──────────────────────────────────────────────
+#  Test Sets
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_test_sets(product_id: int) -> str:
+    """List all test sets for a product."""
+    client = _get_client()
+    test_sets = client.get_test_sets(product_id)
+    return formatters.format_test_sets(test_sets)
+
+
+# ──────────────────────────────────────────────
+#  Automation Hosts
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_automation_hosts(product_id: int) -> str:
+    """List automation hosts configured for a product."""
+    client = _get_client()
+    hosts = client.get_automation_hosts(product_id)
+    return formatters.format_automation_hosts(hosts)
 
 
 # ──────────────────────────────────────────────

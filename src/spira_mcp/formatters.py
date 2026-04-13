@@ -451,3 +451,224 @@ def format_associations(associations):
             lines.append(f" | **Comment:** {a['Comment']}")
         lines.append("\n")
     return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Programs
+# ──────────────────────────────────────────────
+
+def format_programs(programs):
+    if not programs:
+        return "No programs found."
+    lines = ["# Programs\n"]
+    for p in programs:
+        lines.append(
+            f"- **PG:{p.get('ProjectGroupId', '?')}** — {p.get('Name', '?')}\n"
+            f"  {p.get('Description', '')[:200]}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_milestones(milestones):
+    if not milestones:
+        return "No milestones found."
+    lines = [f"# Milestones ({len(milestones)} total)\n"]
+    for m in milestones:
+        lines.append(
+            f"- **ML:{m.get('MilestoneId', '?')}** — {m.get('Name', '?')}\n"
+            f"  **Status:** {m.get('MilestoneStatusName', '?')} | "
+            f"**Start:** {(m.get('StartDate') or '')[:10]} | "
+            f"**End:** {(m.get('EndDate') or '')[:10]}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_capabilities(capabilities):
+    if not capabilities:
+        return "No capabilities found."
+    lines = [f"# Capabilities ({len(capabilities)} total)\n"]
+    for c in capabilities:
+        lines.append(
+            f"- **CP:{c.get('CapabilityId', '?')}** — {c.get('Name', '?')}\n"
+            f"  **Status:** {c.get('CapabilityStatusName', '?')} | "
+            f"**Priority:** {c.get('CapabilityPriorityName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Templates
+# ──────────────────────────────────────────────
+
+def format_templates(templates):
+    if not templates:
+        return "No templates found."
+    lines = ["# Product Templates\n"]
+    for t in templates:
+        lines.append(f"- **PT:{t.get('ProjectTemplateId', '?')}** — {t.get('Name', '?')}\n")
+    return "\n".join(lines)
+
+
+def format_template(t):
+    if not t:
+        return "Template not found."
+    return (
+        f"# Template [PT:{t.get('ProjectTemplateId', '?')}] — {t.get('Name', '?')}\n\n"
+        f"{_field(t, 'Description')}"
+        f"**Active:** {t.get('IsActive', '?')}\n"
+    )
+
+
+def format_artifact_types(types_by_artifact):
+    if not types_by_artifact:
+        return "No artifact types found."
+    lines = ["# Artifact Types\n"]
+    for artifact, types in types_by_artifact.items():
+        lines.append(f"\n## {artifact}\n")
+        for t in (types if isinstance(types, list) else [types]):
+            lines.append(
+                f"- **ID {t.get('ArtifactTypeId', t.get('RequirementTypeId', t.get('TestCaseTypeId', t.get('TaskTypeId', t.get('IncidentTypeId', t.get('RiskTypeId', '?'))))))}** "
+                f"— {t.get('Name', '?')}\n"
+            )
+    return "\n".join(lines)
+
+
+def format_custom_properties(props_by_artifact):
+    if not props_by_artifact:
+        return "No custom properties found."
+    lines = ["# Custom Properties\n"]
+    for artifact, props in props_by_artifact.items():
+        lines.append(f"\n## {artifact}\n")
+        for p in (props if isinstance(props, list) else [props]):
+            prop_name = p.get("Name", "?")
+            prop_num = p.get("PropertyNumber", "?")
+            prop_type = p.get("CustomPropertyTypeName", p.get("CustomPropertyTypeId", "?"))
+            lines.append(f"- **Custom_{prop_num:02d}** — {prop_name} (Type: {prop_type})\n")
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  My Work
+# ──────────────────────────────────────────────
+
+def format_my_tasks(tasks):
+    if not tasks:
+        return "No tasks assigned to you."
+    lines = [f"# My Tasks ({len(tasks)} total)\n"]
+    for t in tasks:
+        lines.append(
+            f"- **TK:{t.get('TaskId', '?')}** — {t.get('Name', '?')} | "
+            f"**Status:** {t.get('TaskStatusName', '?')} | "
+            f"**Project:** {t.get('ProjectName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_my_incidents(incidents):
+    if not incidents:
+        return "No incidents assigned to you."
+    lines = [f"# My Incidents ({len(incidents)} total)\n"]
+    for i in incidents:
+        lines.append(
+            f"- **IN:{i.get('IncidentId', '?')}** — {i.get('Name', '?')} | "
+            f"**Status:** {i.get('IncidentStatusName', '?')} | "
+            f"**Priority:** {i.get('PriorityName', '?')} | "
+            f"**Project:** {i.get('ProjectName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_my_requirements(requirements):
+    if not requirements:
+        return "No requirements assigned to you."
+    lines = [f"# My Requirements ({len(requirements)} total)\n"]
+    for r in requirements:
+        lines.append(
+            f"- **RQ:{r.get('RequirementId', '?')}** — {r.get('Name', '?')} | "
+            f"**Status:** {r.get('StatusName', '?')} | "
+            f"**Project:** {r.get('ProjectName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_my_test_cases(test_cases):
+    if not test_cases:
+        return "No test cases assigned to you."
+    lines = [f"# My Test Cases ({len(test_cases)} total)\n"]
+    for tc in test_cases:
+        lines.append(
+            f"- **TC:{tc.get('TestCaseId', '?')}** — {tc.get('Name', '?')} | "
+            f"**Status:** {tc.get('TestCaseStatusName', '?')} | "
+            f"**Project:** {tc.get('ProjectName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_my_test_sets(test_sets):
+    if not test_sets:
+        return "No test sets assigned to you."
+    lines = [f"# My Test Sets ({len(test_sets)} total)\n"]
+    for ts in test_sets:
+        lines.append(
+            f"- **TX:{ts.get('TestSetId', '?')}** — {ts.get('Name', '?')} | "
+            f"**Status:** {ts.get('TestSetStatusName', '?')} | "
+            f"**Project:** {ts.get('ProjectName', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Risks
+# ──────────────────────────────────────────────
+
+def format_risks(risks):
+    if not risks:
+        return "No risks found."
+    lines = [f"# Risks ({len(risks)} total)\n"]
+    for r in risks:
+        lines.append(
+            f"## [RK:{r.get('RiskId', '?')}] — {r.get('Name', '?')}\n"
+            f"**Status:** {r.get('RiskStatusName', '?')} | "
+            f"**Type:** {r.get('RiskTypeName', '?')}\n"
+            f"**Probability:** {r.get('RiskProbabilityName', '?')} | "
+            f"**Impact:** {r.get('RiskImpactName', '?')}\n"
+            f"**Owner:** {r.get('OwnerName', 'Unassigned')}\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Test Sets
+# ──────────────────────────────────────────────
+
+def format_test_sets(test_sets):
+    if not test_sets:
+        return "No test sets found."
+    lines = [f"# Test Sets ({len(test_sets)} total)\n"]
+    for ts in test_sets:
+        exec_status = EXECUTION_STATUSES.get(ts.get("ExecutionStatusId"), "?")
+        lines.append(
+            f"## [TX:{ts.get('TestSetId', '?')}] — {ts.get('Name', '?')}\n"
+            f"**Status:** {ts.get('TestSetStatusName', '?')} | "
+            f"**Execution:** {exec_status}\n"
+            f"**Planned Date:** {(ts.get('PlannedDate') or '')[:10]}\n"
+            f"**Owner:** {ts.get('OwnerName', 'Unassigned')}\n"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+#  Automation Hosts
+# ──────────────────────────────────────────────
+
+def format_automation_hosts(hosts):
+    if not hosts:
+        return "No automation hosts found."
+    lines = [f"# Automation Hosts ({len(hosts)} total)\n"]
+    for h in hosts:
+        lines.append(
+            f"- **AH:{h.get('AutomationHostId', '?')}** — {h.get('Name', '?')}\n"
+            f"  **Token:** {h.get('Token', '?')} | "
+            f"**Active:** {h.get('IsActive', '?')}\n"
+        )
+    return "\n".join(lines)

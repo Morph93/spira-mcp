@@ -158,6 +158,78 @@ class SpiraClient:
         return self._get(f"projects/{product_id}")
 
     # ──────────────────────────────────────────────
+    #  Programs
+    # ──────────────────────────────────────────────
+
+    def get_programs(self):
+        return self._get("programs") or []
+
+    def get_program_products(self, program_id):
+        products = self._get("projects") or []
+        return [p for p in products if p.get("ProjectGroupId") == program_id]
+
+    def get_milestones(self, program_id):
+        return self._get(f"programs/{program_id}/milestones") or []
+
+    def get_capabilities(self, program_id):
+        return self._paginate_post(
+            f"programs/{program_id}/capabilities/search",
+            body=None,
+            start_key="current_page", size_key="page_size",
+        )
+
+    # ──────────────────────────────────────────────
+    #  Templates
+    # ──────────────────────────────────────────────
+
+    def get_product_templates(self):
+        return self._get("project-templates") or []
+
+    def get_product_template(self, template_id):
+        return self._get(f"project-templates/{template_id}")
+
+    def get_artifact_types(self, template_id):
+        """Get all artifact types and their statuses/priorities/types for a template."""
+        result = {}
+        for artifact in ["requirements", "test-cases", "tasks", "risks", "incidents"]:
+            types = self._get(f"project-templates/{template_id}/{artifact}/types")
+            if types:
+                result[artifact] = types
+        return result
+
+    def get_custom_properties(self, template_id):
+        """Get custom properties for all artifact types in a template."""
+        result = {}
+        artifact_names = [
+            "Requirements", "TestCases", "Tasks", "Incidents",
+            "Risks", "Releases", "TestSets", "TestRuns", "Documents",
+        ]
+        for name in artifact_names:
+            props = self._get(f"project-templates/{template_id}/custom-properties/{name}")
+            if props:
+                result[name] = props
+        return result
+
+    # ──────────────────────────────────────────────
+    #  My Work
+    # ──────────────────────────────────────────────
+
+    def get_my_tasks(self):
+        return self._get("tasks") or []
+
+    def get_my_incidents(self):
+        return self._get("incidents") or []
+
+    def get_my_requirements(self):
+        return self._get("requirements") or []
+
+    def get_my_test_cases(self):
+        return self._get("test-cases") or []
+
+    def get_my_test_sets(self):
+        return self._get("test-sets") or []
+
+    # ──────────────────────────────────────────────
     #  Releases
     # ──────────────────────────────────────────────
 
@@ -581,6 +653,47 @@ class SpiraClient:
 
     def delete_association(self, product_id, artifact_link_id):
         return self._request("DELETE", f"projects/{product_id}/associations/{artifact_link_id}")
+
+    # ──────────────────────────────────────────────
+    #  Builds
+    # ──────────────────────────────────────────────
+
+    # ──────────────────────────────────────────────
+    #  Risks
+    # ──────────────────────────────────────────────
+
+    def get_risks(self, product_id, release_id=None):
+        filters = self._build_filters(ReleaseId=release_id) if release_id else []
+        return self._paginate_post(
+            f"projects/{product_id}/risks",
+            body=filters,
+            params={"sort_field": "CreationDate", "sort_direction": "DESC"},
+        )
+
+    # ──────────────────────────────────────────────
+    #  Test Sets
+    # ──────────────────────────────────────────────
+
+    def get_test_sets(self, product_id):
+        """Get test sets by iterating through test set folders."""
+        folders = self._get(f"projects/{product_id}/test-set-folders") or []
+        all_sets = []
+        for folder in folders:
+            folder_id = folder.get("TestSetFolderId")
+            if folder_id is not None:
+                sets = self._get(
+                    f"projects/{product_id}/test-set-folders/{folder_id}/test-sets",
+                    params={"starting_row": 1, "number_of_rows": 500},
+                ) or []
+                all_sets.extend(sets)
+        return all_sets
+
+    # ──────────────────────────────────────────────
+    #  Automation Hosts
+    # ──────────────────────────────────────────────
+
+    def get_automation_hosts(self, product_id):
+        return self._get(f"projects/{product_id}/automation-hosts") or []
 
     # ──────────────────────────────────────────────
     #  Builds
