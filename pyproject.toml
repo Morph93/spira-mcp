@@ -23,5 +23,22 @@ dependencies = [
     "requests>=2.28.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "python-dotenv>=1.0",
+]
+
 [project.scripts]
 spira-mcp = "spira_mcp.server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "read_only: pure GET, safe in any environment",
+    "mutates: modifies fixed scratch artifacts (toggles fields, no creation)",
+    "creates: creates new artifacts in Spira (cannot always be deleted via API)",
+    "slow: hits multiple endpoints or paginated results",
+    "regression: locks in behavior of a previously-fixed bug",
+]
+addopts = "-ra --strict-markers"

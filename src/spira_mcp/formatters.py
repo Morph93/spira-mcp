@@ -18,22 +18,63 @@ def _id_field(obj, key, label, prefix):
     return f"**{label}:** {prefix}{val}\n"
 
 
-def _custom_props(obj):
-    """Format custom properties if present."""
+def _custom_props(obj, custom_meta=None):
+    """Format custom properties.
+
+    With custom_meta (from client.get_custom_properties_for_artifact_type), resolves
+    list-type option IDs to labels (e.g. "545" -> "Automated (545)").
+    """
     props = obj.get("CustomProperties")
     if not props:
         return ""
     lines = []
     for p in props:
-        name = p.get("Definition", {}).get("Name") or p.get("PropertyNumber", "?")
-        val = (p.get("StringValue") or p.get("IntegerValue") or
-               p.get("BooleanValue") or p.get("DateTimeValue") or
-               p.get("IntegerListValue") or "")
+        defn = p.get("Definition") or {}
+        name = defn.get("Name") or defn.get("CustomPropertyFieldName") or "?"
+        slot = defn.get("CustomPropertyFieldName")
+        val = _resolve_custom_value(p, slot, custom_meta)
         if val not in (None, "", []):
             lines.append(f"  - {name}: {val}")
     if not lines:
         return ""
     return "**Custom Properties:**\n" + "\n".join(lines) + "\n"
+
+
+def _resolve_custom_value(prop, slot, custom_meta):
+    """Resolve a custom-property value, decoding list-type option IDs to labels when metadata exists."""
+    options = None
+    if custom_meta and slot:
+        options = custom_meta.get("options", {}).get(slot)
+
+    int_val = prop.get("IntegerValue")
+    int_list = prop.get("IntegerListValue")
+    str_val = prop.get("StringValue")
+    bool_val = prop.get("BooleanValue")
+    date_val = prop.get("DateTimeValue")
+    decimal_val = prop.get("DecimalValue")
+
+    if int_val is not None:
+        if options:
+            label = options["id_to_label"].get(int_val)
+            if label is not None:
+                return f"{label} ({int_val})"
+        return int_val
+    if int_list:
+        if options:
+            return ", ".join(
+                f"{options['id_to_label'][v]} ({v})" if v in options["id_to_label"] else str(v)
+                for v in int_list
+            )
+        return ", ".join(str(v) for v in int_list)
+    if str_val is not None:
+        return str_val
+    if bool_val is not None:
+        return "Yes" if bool_val else "No"
+    if date_val is not None:
+        return date_val[:10] if isinstance(date_val, str) else str(date_val)
+    if decimal_val is not None:
+        return decimal_val
+    return None
 
 
 # ──────────────────────────────────────────────
@@ -130,7 +171,7 @@ def format_requirements(requirements):
     return "\n".join(lines)
 
 
-def format_requirement(r, children=None, steps=None):
+def format_requirement(r, children=None, steps=None, custom_meta=None):
     if not r:
         return "Requirement not found."
     parts = [
@@ -142,7 +183,7 @@ def format_requirement(r, children=None, steps=None):
         f"**Owner:** {r.get('OwnerName', 'Unassigned')}\n",
         f"**Created:** {(r.get('CreationDate') or '')[:10]}\n",
         _field(r, "Description"),
-        _custom_props(r),
+        _custom_props(r, custom_meta=custom_meta),
     ]
     if steps:
         parts.append("\n## Requirement Steps\n")
@@ -189,7 +230,7 @@ def format_tasks(tasks):
     return "\n".join(lines)
 
 
-def format_task(t):
+def format_task(t, custom_meta=None):
     if not t:
         return "Task not found."
     status = TASK_STATUSES.get(t.get("TaskStatusId"), f"Status #{t.get('TaskStatusId')}")
@@ -208,7 +249,7 @@ def format_task(t):
         f"**Actual:** {t.get('ActualEffort', '-')} min | "
         f"**Remaining:** {t.get('RemainingEffort', '-')} min\n"
         f"{_field(t, 'Description')}"
-        f"{_custom_props(t)}"
+        f"{_custom_props(t, custom_meta=custom_meta)}"
     )
 
 
@@ -235,7 +276,7 @@ def format_incidents(incidents):
     return "\n".join(lines)
 
 
-def format_incident(i):
+def format_incident(i, custom_meta=None):
     if not i:
         return "Incident not found."
     return (
@@ -251,7 +292,7 @@ def format_incident(i):
         f"**Created:** {(i.get('CreationDate') or '')[:10]}\n"
         f"**Closed:** {(i.get('ClosedDate') or '')[:10]}\n"
         f"{_field(i, 'Description')}"
-        f"{_custom_props(i)}"
+        f"{_custom_props(i, custom_meta=custom_meta)}"
     )
 
 
@@ -263,6 +304,37 @@ EXECUTION_STATUSES = {
     1: "Failed", 2: "Passed", 3: "Not Run", 4: "Not Applicable",
     5: "Blocked", 6: "Caution",
 }
+
+
+def format_test_coverage_for_requirement(requirement_id, test_cases):
+    """Format the list of test cases covering a requirement."""
+    if not test_cases:
+        return f"# Test Coverage for RQ:{requirement_id}\n\nNo test cases cover this requirement.\n"
+    lines = [f"# Test Coverage for RQ:{requirement_id} ({len(test_cases)} test case(s))\n"]
+    for tc in test_cases:
+        exec_status = EXECUTION_STATUSES.get(tc.get("ExecutionStatusId"), "Not Run")
+        lines.append(
+            f"- **[TC:{tc.get('TestCaseId')}]** {tc.get('Name', '?')}  \n"
+            f"  Status: {tc.get('TestCaseStatusName', '?')} | "
+            f"Execution: {exec_status} | "
+            f"Priority: {tc.get('TestCasePriorityName', '?')}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def format_requirements_covered_by_test_case(test_case_id, requirements):
+    """Format the list of requirements a test case covers."""
+    if not requirements:
+        return f"# Requirements Covered by TC:{test_case_id}\n\nThis test case does not cover any requirements.\n"
+    lines = [f"# Requirements Covered by TC:{test_case_id} ({len(requirements)} requirement(s))\n"]
+    for r in requirements:
+        lines.append(
+            f"- **[RQ:{r.get('RequirementId')}]** {r.get('Name', '?')}  \n"
+            f"  Status: {r.get('StatusName', '?')} | "
+            f"Importance: {r.get('ImportanceName', '?')} | "
+            f"Type: {r.get('RequirementTypeName', '?')}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def format_test_cases(test_cases):
@@ -282,7 +354,7 @@ def format_test_cases(test_cases):
     return "\n".join(lines)
 
 
-def format_test_case(tc, steps=None):
+def format_test_case(tc, steps=None, custom_meta=None):
     if not tc:
         return "Test case not found."
     exec_status = EXECUTION_STATUSES.get(tc.get("ExecutionStatusId"), "?")
@@ -297,7 +369,7 @@ def format_test_case(tc, steps=None):
         f"**Created:** {(tc.get('CreationDate') or '')[:10]}\n",
         f"**Automated:** {'Yes' if tc.get('AutomationEngineId') else 'No'}\n",
         _field(tc, "Description"),
-        _custom_props(tc),
+        _custom_props(tc, custom_meta=custom_meta),
     ]
     if steps:
         parts.append("\n## Test Steps\n")
@@ -464,7 +536,7 @@ def format_programs(programs):
     for p in programs:
         lines.append(
             f"- **PG:{p.get('ProjectGroupId', '?')}** — {p.get('Name', '?')}\n"
-            f"  {p.get('Description', '')[:200]}\n"
+            f"  {(p.get('Description') or '')[:200]}\n"
         )
     return "\n".join(lines)
 
@@ -533,18 +605,31 @@ def format_artifact_types(types_by_artifact):
     return "\n".join(lines)
 
 
-def format_custom_properties(props_by_artifact):
-    if not props_by_artifact:
-        return "No custom properties found."
-    lines = ["# Custom Properties\n"]
-    for artifact, props in props_by_artifact.items():
-        lines.append(f"\n## {artifact}\n")
-        for p in (props if isinstance(props, list) else [props]):
-            prop_name = p.get("Name", "?")
-            prop_num = p.get("PropertyNumber", "?")
-            prop_type = p.get("CustomPropertyTypeName", p.get("CustomPropertyTypeId", "?"))
-            lines.append(f"- **Custom_{prop_num:02d}** — {prop_name} (Type: {prop_type})\n")
-    return "\n".join(lines)
+def format_custom_properties(artifact_type_name, fields):
+    """Format custom-property metadata for one artifact type.
+
+    Shows each field's slot, display name, type, and — for list-type fields — the
+    full option list with each option's CustomPropertyValueId.
+    """
+    if not fields:
+        return f"No custom properties defined for {artifact_type_name}."
+    lines = [f"# Custom Properties: {artifact_type_name} ({len(fields)} total)\n"]
+    for f in fields:
+        name = f.get("Name", "?")
+        slot = f.get("CustomPropertyFieldName") or f"Custom_{(f.get('PropertyNumber') or 0):02d}"
+        type_name = f.get("CustomPropertyTypeName") or f.get("CustomPropertyTypeId", "?")
+        lines.append(f"\n## {slot} — {name}\n")
+        lines.append(f"**Type:** {type_name}\n")
+        custom_list = f.get("CustomList")
+        if custom_list:
+            list_name = custom_list.get("Name", "?")
+            values = custom_list.get("Values") or []
+            lines.append(f"**List:** {list_name} ({len(values)} options)\n")
+            for v in values:
+                vid = v.get("CustomPropertyValueId", "?")
+                vname = v.get("Name", "?")
+                lines.append(f"- **{vid}** — {vname}\n")
+    return "".join(lines)
 
 
 # ──────────────────────────────────────────────

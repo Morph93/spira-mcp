@@ -43,6 +43,17 @@ def _get_client():
     return SpiraClient(base_url, username, api_key)
 
 
+def _custom_meta(client, product_id, artifact_type_name):
+    """Fetch custom-property metadata for an artifact type via product_id.
+
+    Resolves the product's template_id, then returns the indexed metadata
+    (cached per-process). Used by single-artifact formatters to decode
+    list-type custom-property option IDs to their display labels.
+    """
+    template_id = client.get_template_id_for_product(product_id)
+    return client.get_custom_properties_for_artifact_type(template_id, artifact_type_name)
+
+
 # ──────────────────────────────────────────────
 #  Products
 # ──────────────────────────────────────────────
@@ -132,15 +143,34 @@ def list_artifact_types(template_id: int) -> str:
 
 
 @mcp.tool()
-def list_custom_properties(template_id: int) -> str:
-    """List all custom properties (custom fields) for all artifact types in a template.
+def list_custom_properties(
+    artifact_type_name: str,
+    template_id: int | None = None,
+    product_id: int | None = None,
+) -> str:
+    """List custom properties (custom fields) for one artifact type in a template.
 
-    Shows field names, property numbers (Custom_01, Custom_02, etc.), and types.
-    Use this to discover custom field IDs for filtering or updating artifacts.
+    Shows each field's slot (Custom_XX), display name, type, and — for list-type
+    fields — the full option list with each option's CustomPropertyValueId.
+    Use this to discover field slots and option IDs for filtering or updating
+    artifacts.
+
+    Required:
+    - artifact_type_name: One of TestCase, Requirement, Task, Incident, Risk, Release, TestSet, TestStep
+
+    Provide either:
+    - template_id: The product template ID
+    - product_id: The product ID (template is resolved automatically)
     """
+    if template_id is None and product_id is None:
+        return "Provide either template_id or product_id."
+
     client = _get_client()
-    props = client.get_custom_properties(template_id)
-    return formatters.format_custom_properties(props)
+    if template_id is None:
+        template_id = client.get_template_id_for_product(product_id)
+
+    meta = client.get_custom_properties_for_artifact_type(template_id, artifact_type_name)
+    return formatters.format_custom_properties(artifact_type_name, meta["fields"])
 
 
 # ──────────────────────────────────────────────
@@ -260,7 +290,8 @@ def get_requirement(product_id: int, requirement_id: int) -> str:
     req = client.get_requirement(product_id, requirement_id)
     children = client.get_requirement_children(product_id, requirement_id)
     steps = client.get_requirement_steps(product_id, requirement_id)
-    return formatters.format_requirement(req, children=children, steps=steps)
+    custom_meta = _custom_meta(client, product_id, "Requirement")
+    return formatters.format_requirement(req, children=children, steps=steps, custom_meta=custom_meta)
 
 
 @mcp.tool()
@@ -297,7 +328,8 @@ def create_requirement(
         parent_requirement_id=parent_requirement_id,
     )
     req_id = result.get("RequirementId", "?") if isinstance(result, dict) else "?"
-    return f"Requirement created: **RQ:{req_id}** — {name}\n\n{formatters.format_requirement(result)}"
+    custom_meta = _custom_meta(client, product_id, "Requirement")
+    return f"Requirement created: **RQ:{req_id}** — {name}\n\n{formatters.format_requirement(result, custom_meta=custom_meta)}"
 
 
 @mcp.tool()
@@ -313,11 +345,17 @@ def update_requirement(
 ) -> str:
     """Update a requirement. Only pass the fields you want to change.
 
+    Note: status/importance IDs are template-specific. The 1=Critical/2=High/3=Medium/4=Low
+    mapping is the Spira default but does NOT apply to all instances — many templates use
+    custom IDs. To find the valid IDs for this product's template, hit
+    /project-templates/{template_id}/requirements/importances (or use list_custom_properties
+    for custom-list-backed fields).
+
     Fields (all optional):
     - name: Requirement title
     - description: Detailed description (supports HTML)
-    - requirement_status_id: 1=Requested, 2=Planned, 3=In Progress, 4=Developed, 5=Accepted, 6=Rejected, 7=Under Review, 8=Obsolete, 9=Tested, 10=Completed
-    - importance_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - requirement_status_id: status ID (template-specific — see note above)
+    - importance_id: importance ID (template-specific — see note above)
     - owner_id: User ID to assign
     - release_id: Release/sprint to assign to
     """
@@ -340,7 +378,8 @@ def update_requirement(
 
     client = _get_client()
     result = client.update_requirement(product_id, requirement_id, **updates)
-    return f"Requirement RQ:{requirement_id} updated successfully.\n\n{formatters.format_requirement(result)}"
+    custom_meta = _custom_meta(client, product_id, "Requirement")
+    return f"Requirement RQ:{requirement_id} updated successfully.\n\n{formatters.format_requirement(result, custom_meta=custom_meta)}"
 
 
 # ──────────────────────────────────────────────
@@ -381,7 +420,8 @@ def get_task(product_id: int, task_id: int) -> str:
     """Get a single task by ID with full details."""
     client = _get_client()
     task = client.get_task(product_id, task_id)
-    return formatters.format_task(task)
+    custom_meta = _custom_meta(client, product_id, "Task")
+    return formatters.format_task(task, custom_meta=custom_meta)
 
 
 @mcp.tool()
@@ -437,7 +477,8 @@ def create_task(
         estimated_effort=estimated_effort,
     )
     task_id = result.get("TaskId", "?") if isinstance(result, dict) else "?"
-    return f"Task created: **TK:{task_id}** — {name}\n\n{formatters.format_task(result)}"
+    custom_meta = _custom_meta(client, product_id, "Task")
+    return f"Task created: **TK:{task_id}** — {name}\n\n{formatters.format_task(result, custom_meta=custom_meta)}"
 
 
 @mcp.tool()
@@ -456,11 +497,15 @@ def update_task(
 ) -> str:
     """Update a task. Only pass the fields you want to change.
 
+    Note: status/priority IDs are template-specific. The defaults below are common but
+    do NOT apply to all instances. To find the valid IDs for this product's template,
+    hit /project-templates/{template_id}/tasks/priorities (or /tasks/statuses).
+
     Fields (all optional):
     - name: Task name
     - description: Task description
-    - task_status_id: 1=Not Started, 2=In Progress, 3=Completed, 4=Blocked, 5=Deferred, 6=Rejected, 7=Under Review, 8=Obsolete
-    - task_priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - task_status_id: status ID (template-specific — see note above)
+    - task_priority_id: priority ID (template-specific — see note above)
     - owner_id: User ID to assign
     - release_id: Release/sprint to assign the task to
     - estimated_effort: Estimated effort in minutes
@@ -492,7 +537,8 @@ def update_task(
 
     client = _get_client()
     result = client.update_task(product_id, task_id, **updates)
-    return f"Task TK:{task_id} updated successfully.\n\n{formatters.format_task(result)}"
+    custom_meta = _custom_meta(client, product_id, "Task")
+    return f"Task TK:{task_id} updated successfully.\n\n{formatters.format_task(result, custom_meta=custom_meta)}"
 
 
 # ──────────────────────────────────────────────
@@ -534,7 +580,8 @@ def get_incident(product_id: int, incident_id: int) -> str:
     """Get a single incident by ID with full details."""
     client = _get_client()
     incident = client.get_incident(product_id, incident_id)
-    return formatters.format_incident(incident)
+    custom_meta = _custom_meta(client, product_id, "Incident")
+    return formatters.format_incident(incident, custom_meta=custom_meta)
 
 
 @mcp.tool()
@@ -571,7 +618,8 @@ def create_incident(
         detected_release_id=detected_release_id,
     )
     inc_id = result.get("IncidentId", "?") if isinstance(result, dict) else "?"
-    return f"Incident created: **IN:{inc_id}** — {name}\n\n{formatters.format_incident(result)}"
+    custom_meta = _custom_meta(client, product_id, "Incident")
+    return f"Incident created: **IN:{inc_id}** — {name}\n\n{formatters.format_incident(result, custom_meta=custom_meta)}"
 
 
 @mcp.tool()
@@ -589,12 +637,16 @@ def update_incident(
 ) -> str:
     """Update an incident. Only pass the fields you want to change.
 
+    Note: status/priority/severity IDs are template-specific. To find the valid IDs for
+    this product's template, hit /project-templates/{template_id}/incidents/priorities
+    (also /severities, /statuses).
+
     Fields (all optional):
     - name: Incident title
     - description: Detailed description (supports HTML)
-    - incident_status_id: Status (project-specific IDs — common: 1=New, 2=Open, 3=Assigned, 5=Fixed, 6=Closed, 9=Duplicate)
-    - priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
-    - severity_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - incident_status_id: status ID (template-specific — see note above)
+    - priority_id: priority ID (template-specific — see note above)
+    - severity_id: severity ID (template-specific — see note above)
     - owner_id: User ID to assign
     - detected_release_id: Release where the bug was found
     - resolved_release_id: Release where the bug was fixed
@@ -622,7 +674,8 @@ def update_incident(
 
     client = _get_client()
     result = client.update_incident(product_id, incident_id, **updates)
-    return f"Incident IN:{incident_id} updated successfully.\n\n{formatters.format_incident(result)}"
+    custom_meta = _custom_meta(client, product_id, "Incident")
+    return f"Incident IN:{incident_id} updated successfully.\n\n{formatters.format_incident(result, custom_meta=custom_meta)}"
 
 
 # ──────────────────────────────────────────────
@@ -649,7 +702,43 @@ def get_test_case(product_id: int, test_case_id: int) -> str:
     client = _get_client()
     tc = client.get_test_case(product_id, test_case_id)
     steps = client.get_test_steps(product_id, test_case_id)
-    return formatters.format_test_case(tc, steps=steps)
+    custom_meta = _custom_meta(client, product_id, "TestCase")
+    return formatters.format_test_case(tc, steps=steps, custom_meta=custom_meta)
+
+
+@mcp.tool()
+def list_test_coverage(product_id: int, requirement_id: int) -> str:
+    """List the test cases covering a requirement (Spira's Test Coverage relationship).
+
+    Test Coverage is the dedicated, first-class link between Requirements and Test Cases
+    in Spira. It drives the requirement's CoverageCount* metrics and the "Test Coverage"
+    UI tab. It is NOT the same as a generic Association — associations don't count for
+    coverage and don't show up in the Test Coverage view.
+
+    Use this tool when you want to know which tests cover a requirement.
+
+    Note: Spira's REST API exposes test coverage as READ-ONLY in the current version.
+    To add or remove a coverage link, use the Spira UI's Test Coverage tab on the
+    requirement (or the test case's Requirements tab).
+    """
+    client = _get_client()
+    test_cases = client.get_test_coverage_for_requirement(product_id, requirement_id)
+    return formatters.format_test_coverage_for_requirement(requirement_id, test_cases)
+
+
+@mcp.tool()
+def list_covered_requirements(product_id: int, test_case_id: int) -> str:
+    """List the requirements a test case covers (reverse of list_test_coverage).
+
+    Same first-class Test Coverage relationship as list_test_coverage, viewed from
+    the test case side.
+
+    Note: Spira's REST API exposes test coverage as READ-ONLY in the current version.
+    To add or remove a coverage link, use the Spira UI.
+    """
+    client = _get_client()
+    requirements = client.get_requirements_covered_by_test_case(product_id, test_case_id)
+    return formatters.format_requirements_covered_by_test_case(test_case_id, requirements)
 
 
 @mcp.tool()
@@ -689,7 +778,8 @@ def create_test_case(
         tags=tags,
     )
     tc_id = result.get("TestCaseId", "?") if isinstance(result, dict) else "?"
-    return f"Test case created: **TC:{tc_id}** — {name}\n\n{formatters.format_test_case(result)}"
+    custom_meta = _custom_meta(client, product_id, "TestCase")
+    return f"Test case created: **TC:{tc_id}** — {name}\n\n{formatters.format_test_case(result, custom_meta=custom_meta)}"
 
 
 @mcp.tool()
@@ -710,11 +800,16 @@ def update_test_case(
 
     Automatically handles optimistic concurrency (GETs current state first, then PUTs).
 
+    Note: status/priority IDs are template-specific. The 1=Draft etc. mapping is the
+    Spira default but does NOT apply to all instances. To find the valid IDs for this
+    product's template, hit /project-templates/{template_id}/test-cases/priorities
+    (also /statuses).
+
     Fields (all optional — only pass what you want to change):
     - name: Test case name
     - description: Test case description (supports HTML)
-    - test_case_status_id: 1=Draft, 2=Ready for Review, 3=Rejected, 4=Approved, 5=Obsolete, 6=Ready for Test, 7=Tested
-    - test_case_priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - test_case_status_id: status ID (template-specific — see note above)
+    - test_case_priority_id: priority ID (template-specific — see note above)
     - test_case_type_id: Type of test case
     - owner_id: User ID to assign
     - estimated_duration: Estimated duration in minutes
@@ -746,7 +841,8 @@ def update_test_case(
 
     client = _get_client()
     result = client.update_test_case(product_id, test_case_id, **updates)
-    return f"Test case TC:{test_case_id} updated successfully.\n\n{formatters.format_test_case(result)}"
+    custom_meta = _custom_meta(client, product_id, "TestCase")
+    return f"Test case TC:{test_case_id} updated successfully.\n\n{formatters.format_test_case(result, custom_meta=custom_meta)}"
 
 
 @mcp.tool()
@@ -1194,13 +1290,21 @@ def create_association(
     link_type: str = "related",
     comment: str = "",
 ) -> str:
-    """Link two Spira artifacts together (e.g., requirement to test case, bug to requirement).
+    """Link two Spira artifacts together as a generic Association.
 
-    Common use cases:
-    - Link requirement to test case: source_type="requirement", dest_type="test_case"
-    - Link bug to requirement: source_type="incident", dest_type="requirement"
-    - Link bug to test case: source_type="incident", dest_type="test_case"
-    - Link test case to test case: source_type="test_case", dest_type="test_case"
+    IMPORTANT — this is NOT the right tool for linking a Test Case to a Requirement.
+    Test Case <-> Requirement linking in Spira is a separate first-class relationship
+    called "Test Coverage" — it drives the requirement's CoverageCount* metrics and the
+    "Test Coverage" UI tab. Generic Associations show up only on the "Associations" tab
+    and do NOT count toward coverage. Use list_test_coverage / list_covered_requirements
+    to read coverage; coverage writes happen in the Spira UI (Spira's REST API is
+    read-only for coverage in current versions).
+
+    Use this tool for generic links such as:
+    - bug <-> requirement (incident -> requirement)
+    - bug <-> test case (incident -> test_case)
+    - test case <-> test case (related-to relationships)
+    - task <-> task
 
     Parameters:
     - source_type: requirement, test_case, incident, release, test_run, task, test_step, test_set, risk
@@ -1355,6 +1459,7 @@ TOOL_PRESETS = {
         "list_tasks", "get_task", "count_tasks",
         "list_incidents", "get_incident",
         "list_test_cases", "get_test_case", "list_test_folders",
+        "list_test_coverage", "list_covered_requirements",
         "list_test_runs", "get_test_run",
         "list_risks", "list_test_sets", "list_automation_hosts",
         "list_documents", "list_associations",
@@ -1378,6 +1483,7 @@ TOOL_PRESETS = {
         "list_tasks", "get_task", "count_tasks", "update_task",
         "list_incidents", "get_incident", "create_incident", "update_incident",
         "list_test_cases", "get_test_case", "create_test_case", "update_test_case", "list_test_folders",
+        "list_test_coverage", "list_covered_requirements",
         "create_test_step", "update_test_step", "delete_test_step",
         "list_test_runs", "get_test_run", "create_test_run", "save_test_run_results", "record_test_run",
         "list_test_sets",
