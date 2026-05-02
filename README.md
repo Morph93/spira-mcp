@@ -1,6 +1,6 @@
 # spira-mcp
 
-MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 54 tools.
+MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 56 tools.
 
 ## Why this exists
 
@@ -15,7 +15,9 @@ The official `mcp-server-spira` package has critical limitations:
 | Create/update artifacts | Only `create_build` and `record_test_run` | **Full CRUD** for requirements, tasks, incidents, test cases, test steps |
 | Per-step test results | Not supported | **Full support** — create run, fill per-step pass/fail + actual results |
 | Image embedding | Not supported | **`attach_image_to_field`** — inline `<img>` tags visible in Spira UI |
-| Artifact linking (associations) | Not supported | **`create_association`** — link any two artifacts (RQ↔TC, IN↔RQ, IN↔TC, etc.) |
+| Test Coverage (Requirement ↔ Test Case) | Not surfaced | **`list_test_coverage` / `list_covered_requirements`** — read Spira's first-class coverage relationship (the one that drives coverage metrics) |
+| Generic associations | Not supported | **`create_association`** — link any two artifacts (incident ↔ requirement, etc.) |
+| Custom properties | Raw IDs, no label resolution | **Indexed metadata + label resolution** — list values render as `Label (id)`, falsy values stay visible |
 | Document management | Not supported | **Upload, attach, list** documents on any artifact |
 | Test case folders | Not supported | **`list_test_folders`** — browse hierarchy, move TCs between folders |
 | Test step IDs in output | Steps shown as ordinals only (Step 1, 2, 3) | **`TestStepId`** shown per step — enables precise updates |
@@ -48,7 +50,9 @@ export INFLECTRA_SPIRA_USERNAME="your.email@company.com"
 export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 ```
 
-### Claude Code — `.mcp.json`
+### MCP client configuration
+
+Any MCP-compatible client can launch the server with `python3 -m spira_mcp`. Example config:
 
 ```json
 {
@@ -68,16 +72,16 @@ export INFLECTRA_SPIRA_API_KEY="{YOUR-API-KEY-GUID}"
 
 ### Tool Filtering (optional)
 
-By default all 54 tools are exposed. To limit which tools are available, set the `SPIRA_MCP_TOOLS` environment variable to a **preset name** or a **comma-separated list of tool names**.
+By default all 56 tools are exposed. To limit which tools are available, set the `SPIRA_MCP_TOOLS` environment variable to a **preset name** or a **comma-separated list of tool names**.
 
 **Presets:**
 
 | Preset | Tools | Description |
 |--------|:-----:|-------------|
-| `full` | 54 | All tools (default) |
-| `qa` | 41 | QA-focused: test cases, test runs, incidents, documents, associations |
+| `full` | 56 | All tools (default) |
+| `qa` | 43 | QA-focused: test cases, test runs, incidents, coverage, documents, associations |
 | `dev` | 22 | Dev-focused: tasks, requirements, incidents, risks, associations |
-| `read_only` | 34 | All list/get tools, no create/update/delete |
+| `read_only` | 36 | All list/get tools, no create/update/delete |
 | `minimal` | 12 | Just list/get for core artifacts (products, releases, requirements, tasks, incidents, test cases) |
 
 **Using a preset:**
@@ -109,74 +113,7 @@ By default all 54 tools are exposed. To limit which tools are available, set the
 }
 ```
 
-### Pre-authorize tools (`.claude/settings.local.json`)
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "mcp__spira__list_products",
-      "mcp__spira__get_product",
-      "mcp__spira__list_programs",
-      "mcp__spira__list_program_products",
-      "mcp__spira__list_milestones",
-      "mcp__spira__list_capabilities",
-      "mcp__spira__list_templates",
-      "mcp__spira__get_template",
-      "mcp__spira__list_artifact_types",
-      "mcp__spira__list_custom_properties",
-      "mcp__spira__get_my_tasks",
-      "mcp__spira__get_my_incidents",
-      "mcp__spira__get_my_requirements",
-      "mcp__spira__get_my_test_cases",
-      "mcp__spira__get_my_test_sets",
-      "mcp__spira__list_releases",
-      "mcp__spira__get_release",
-      "mcp__spira__list_requirements",
-      "mcp__spira__get_requirement",
-      "mcp__spira__create_requirement",
-      "mcp__spira__update_requirement",
-      "mcp__spira__list_tasks",
-      "mcp__spira__get_task",
-      "mcp__spira__count_tasks",
-      "mcp__spira__create_task",
-      "mcp__spira__update_task",
-      "mcp__spira__list_incidents",
-      "mcp__spira__get_incident",
-      "mcp__spira__create_incident",
-      "mcp__spira__update_incident",
-      "mcp__spira__list_test_cases",
-      "mcp__spira__get_test_case",
-      "mcp__spira__create_test_case",
-      "mcp__spira__update_test_case",
-      "mcp__spira__list_test_folders",
-      "mcp__spira__create_test_step",
-      "mcp__spira__update_test_step",
-      "mcp__spira__delete_test_step",
-      "mcp__spira__list_test_runs",
-      "mcp__spira__get_test_run",
-      "mcp__spira__create_test_run",
-      "mcp__spira__save_test_run_results",
-      "mcp__spira__record_test_run",
-      "mcp__spira__upload_document",
-      "mcp__spira__attach_document",
-      "mcp__spira__attach_image_to_field",
-      "mcp__spira__list_documents",
-      "mcp__spira__create_association",
-      "mcp__spira__list_associations",
-      "mcp__spira__delete_association",
-      "mcp__spira__list_risks",
-      "mcp__spira__list_test_sets",
-      "mcp__spira__list_automation_hosts",
-      "mcp__spira__create_build"
-    ]
-  },
-  "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": ["spira"]
-}
-```
-
-## Available Tools (54)
+## Available Tools (56)
 
 ### Products
 - `list_products` — List all accessible products
@@ -192,7 +129,7 @@ By default all 54 tools are exposed. To limit which tools are available, set the
 - `list_templates` — List all product templates
 - `get_template` — Get template details
 - `list_artifact_types` — List artifact types (requirement types, incident types, etc.) for a template — use to discover valid type IDs
-- `list_custom_properties` — List custom fields for all artifact types in a template
+- `list_custom_properties` — Custom fields for one artifact type, with full option lists. Takes `artifact_type_name` (TestCase/Requirement/Task/Incident/Risk/Release/TestSet/TestStep) and either `template_id` or `product_id`. Resolves list-value IDs to their labels in artifact output.
 
 ### My Work
 - `get_my_tasks` — Tasks assigned to current user, across all products
@@ -234,13 +171,22 @@ By default all 54 tools are exposed. To limit which tools are available, set the
 - `update_test_case` — Update status, priority, owner, folder (move), tags
 - `list_test_folders` — Browse folder hierarchy to find folder IDs for moves
 
+### Test Coverage (Requirement ↔ Test Case)
+
+Spira's first-class coverage relationship — the one that drives the requirement's `CoverageCount*` metrics and the "Test Coverage" UI tab. **Distinct from generic Associations** — associations don't count toward coverage and don't show up in the Test Coverage view.
+
+- `list_test_coverage` — Test cases covering a requirement (with execution status of each)
+- `list_covered_requirements` — Requirements a test case covers
+
+> Coverage is **read-only** through the Spira REST API in current Spira versions. To add or remove a coverage link, use the Spira UI's Test Coverage tab on the requirement (or the test case's Requirements tab).
+
 ### Test Steps
 - `create_test_step` — Add a new step to a test case
 - `update_test_step` — Update description, expected result, sample data
 - `delete_test_step` — Remove a step from a test case
 
 ### Test Sets
-- `list_test_sets` — List all test sets for a product
+- `list_test_sets` — List all test sets for a product (root-level + folder-nested, deduped)
 
 ### Test Runs
 - `list_test_runs` — List recent runs sorted by date
@@ -255,8 +201,11 @@ By default all 54 tools are exposed. To limit which tools are available, set the
 - `attach_image_to_field` — Upload and embed image inline in a rich-text field (the only way to make images visible in Spira UI)
 - `list_documents` — List documents attached to an artifact
 
-### Associations (Linking)
-- `create_association` — Link any two artifacts (RQ↔TC, IN↔RQ, IN↔TC, etc.)
+### Associations (Generic Linking)
+
+For generic free-form links between artifacts. **Not for Test Case ↔ Requirement** — that's Test Coverage (see above), which is a separate Spira concept.
+
+- `create_association` — Link two artifacts (e.g. incident ↔ requirement, incident ↔ test case, task ↔ task)
 - `list_associations` — See existing links on an artifact
 - `delete_association` — Remove a link
 
@@ -268,22 +217,20 @@ By default all 54 tools are exposed. To limit which tools are available, set the
 
 ## Filter Reference
 
-### Requirement Status IDs
-1=Requested, 2=Planned, 3=In Progress, 4=Developed, 5=Accepted, 6=Rejected, 7=Under Review, 8=Obsolete, 9=Tested, 10=Completed
+> ⚠️ Status / priority / importance / severity IDs are **template-specific** and are **not** universal across Spira instances. The Spira-default mappings (e.g. `1=Critical, 2=High, ...`) only apply to templates that haven't customised these lists. To find the valid IDs for your product's template, query the discovery endpoints:
+>
+> - Requirement importance: `/project-templates/{template_id}/requirements/importances`
+> - Requirement / task status: `/project-templates/{template_id}/{requirements|tasks}/statuses`
+> - Task priority: `/project-templates/{template_id}/tasks/priorities`
+> - Incident priority / severity / status: `/project-templates/{template_id}/incidents/{priorities|severities|statuses}`
+> - Test case priority / status: `/project-templates/{template_id}/test-cases/{priorities|statuses}`
+>
+> Pass `product_id` instead of `template_id` to most tools and the server resolves the template automatically.
 
-### Task Status IDs
-1=Not Started, 2=In Progress, 3=Completed, 4=Blocked, 5=Deferred, 6=Rejected, 7=Under Review, 8=Obsolete
-
-### Incident Priority / Severity
-1=Critical, 2=High, 3=Medium, 4=Low
-
-### Test Case Status IDs
-1=Draft, 2=Ready for Review, 3=Rejected, 4=Approved, 5=Obsolete, 6=Ready for Test, 7=Tested
-
-### Execution Status IDs
+### Execution Status IDs (typically stable across templates)
 1=Failed, 2=Passed, 3=Not Run, 4=Not Applicable, 5=Blocked, 6=Caution
 
-### Build Status IDs
+### Build Status IDs (typically stable across templates)
 1=Succeeded, 2=Failed, 3=Unstable, 4=Aborted
 
 ### Association Link Types

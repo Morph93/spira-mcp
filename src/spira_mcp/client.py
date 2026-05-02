@@ -4,6 +4,43 @@ import time
 import requests
 
 
+SUPPORTED_ARTIFACT_TYPES = frozenset({
+    "Requirement", "TestCase", "Task", "Incident",
+    "Risk", "Release", "TestSet", "TestStep", "TestRun",
+})
+
+# Per-process caches — template metadata is effectively static during an MCP session.
+_CUSTOM_PROPS_CACHE = {}      # (template_id, artifact_type_name) -> indexed metadata
+_PRODUCT_TEMPLATE_CACHE = {}  # product_id -> template_id
+
+
+def _build_custom_prop_index(fields):
+    """Index custom-property fields for O(1) lookup by slot, name, and option label/id."""
+    by_slot = {}
+    by_name = {}
+    options = {}
+    for f in fields:
+        slot = f.get("CustomPropertyFieldName")
+        name = f.get("Name")
+        if slot:
+            by_slot[slot] = f
+        if name:
+            by_name[name] = f
+        custom_list = f.get("CustomList")
+        if custom_list and slot:
+            label_to_id = {}
+            id_to_label = {}
+            for v in custom_list.get("Values") or []:
+                vid = v.get("CustomPropertyValueId")
+                vname = v.get("Name")
+                if vid is not None and vname is not None:
+                    label_to_id[vname] = vid
+                    id_to_label[vid] = vname
+            if label_to_id:
+                options[slot] = {"label_to_id": label_to_id, "id_to_label": id_to_label}
+    return {"fields": fields, "by_slot": by_slot, "by_name": by_name, "options": options}
+
+
 class SpiraApiError(Exception):
     """Raised when the Spira API returns an error response."""
 
@@ -197,18 +234,37 @@ class SpiraClient:
                 result[artifact] = types
         return result
 
-    def get_custom_properties(self, template_id):
-        """Get custom properties for all artifact types in a template."""
-        result = {}
-        artifact_names = [
-            "Requirements", "TestCases", "Tasks", "Incidents",
-            "Risks", "Releases", "TestSets", "TestRuns", "Documents",
-        ]
-        for name in artifact_names:
-            props = self._get(f"project-templates/{template_id}/custom-properties/{name}")
-            if props:
-                result[name] = props
-        return result
+    def get_template_id_for_product(self, product_id):
+        """Resolve a product's template_id, with per-process caching."""
+        if product_id in _PRODUCT_TEMPLATE_CACHE:
+            return _PRODUCT_TEMPLATE_CACHE[product_id]
+        product = self.get_product(product_id)
+        if not product:
+            raise SpiraApiError(404, f"Product {product_id} not found", "")
+        template_id = product.get("ProjectTemplateId")
+        if template_id is None:
+            raise SpiraApiError(0, f"Product {product_id} has no ProjectTemplateId", "")
+        _PRODUCT_TEMPLATE_CACHE[product_id] = template_id
+        return template_id
+
+    def get_custom_properties_for_artifact_type(self, template_id, artifact_type_name):
+        """Fetch custom-property metadata for one artifact type, with indexed cache.
+
+        Returns a dict with keys: 'fields' (raw list), 'by_slot' (Custom_XX -> field),
+        'by_name' (display name -> field), 'options' ({slot: {label_to_id, id_to_label}}).
+        """
+        cache_key = (template_id, artifact_type_name)
+        if cache_key in _CUSTOM_PROPS_CACHE:
+            return _CUSTOM_PROPS_CACHE[cache_key]
+        if artifact_type_name not in SUPPORTED_ARTIFACT_TYPES:
+            raise ValueError(
+                f"Unknown artifact_type_name '{artifact_type_name}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED_ARTIFACT_TYPES))}"
+            )
+        fields = self._get(f"project-templates/{template_id}/custom-properties/{artifact_type_name}") or []
+        indexed = _build_custom_prop_index(fields)
+        _CUSTOM_PROPS_CACHE[cache_key] = indexed
+        return indexed
 
     # ──────────────────────────────────────────────
     #  My Work
@@ -296,14 +352,19 @@ class SpiraClient:
         return self._post(f"projects/{product_id}/requirements", body=body)
 
     def update_requirement(self, product_id, requirement_id, **updates):
-        """Update a requirement. GETs current state first for concurrency, merges updates, PUTs back."""
+        """Update a requirement. GETs current state first for concurrency, merges updates, PUTs back.
+
+        Spira's PUT returns 200 with no body, so we re-fetch the requirement to return
+        the canonical updated object for downstream formatting.
+        """
         current = self.get_requirement(product_id, requirement_id)
         if not current:
             raise SpiraApiError(404, f"Requirement {requirement_id} not found", "")
         for key, value in updates.items():
             if value is not None:
                 current[key] = value
-        return self._put(f"projects/{product_id}/requirements", body=current)
+        self._put(f"projects/{product_id}/requirements", body=current)
+        return self.get_requirement(product_id, requirement_id)
 
     # ──────────────────────────────────────────────
     #  Tasks — THE KEY FIX
@@ -395,14 +456,19 @@ class SpiraClient:
         return self._post(f"projects/{product_id}/tasks", body=body)
 
     def update_task(self, product_id, task_id, **updates):
-        """Update a task. GETs current state first for concurrency, merges updates, PUTs back."""
+        """Update a task. GETs current state first for concurrency, merges updates, PUTs back.
+
+        Spira's PUT returns 200 with no body, so we re-fetch the task to return
+        the canonical updated object for downstream formatting.
+        """
         current = self.get_task(product_id, task_id)
         if not current:
             raise SpiraApiError(404, f"Task {task_id} not found", "")
         for key, value in updates.items():
             if value is not None:
                 current[key] = value
-        return self._put(f"projects/{product_id}/tasks", body=current)
+        self._put(f"projects/{product_id}/tasks", body=current)
+        return self.get_task(product_id, task_id)
 
     # ──────────────────────────────────────────────
     #  Incidents
@@ -449,14 +515,19 @@ class SpiraClient:
         return self._post(f"projects/{product_id}/incidents", body=body)
 
     def update_incident(self, product_id, incident_id, **updates):
-        """Update an incident. GETs current state first for concurrency, merges updates, PUTs back."""
+        """Update an incident. GETs current state first for concurrency, merges updates, PUTs back.
+
+        Note: unlike requirements/tasks/test-cases, Spira's incident update uses the
+        individual-resource URL (.../incidents/{id}), not the collection URL.
+        """
         current = self.get_incident(product_id, incident_id)
         if not current:
             raise SpiraApiError(404, f"Incident {incident_id} not found", "")
         for key, value in updates.items():
             if value is not None:
                 current[key] = value
-        return self._put(f"projects/{product_id}/incidents", body=current)
+        self._put(f"projects/{product_id}/incidents/{incident_id}", body=current)
+        return self.get_incident(product_id, incident_id)
 
     # ──────────────────────────────────────────────
     #  Test Cases
@@ -477,6 +548,28 @@ class SpiraClient:
     def get_test_cases_by_release(self, product_id, release_id):
         """Uses the dedicated /releases/{id}/test-cases sub-resource endpoint."""
         return self._get(f"projects/{product_id}/releases/{release_id}/test-cases") or []
+
+    # ──────────────────────────────────────────────
+    #  Test Coverage (Requirement <-> Test Case)
+    # ──────────────────────────────────────────────
+    #
+    # Coverage is Spira's first-class relationship between Requirements and Test Cases.
+    # It drives the requirement's CoverageCount* metrics and the "Test Coverage" UI tab.
+    # NOT the same as Associations — associations are generic free-form links and don't
+    # affect coverage metrics.
+    #
+    # Spira REST API v7 on Spira 9.0.0.1 exposes coverage as READ-ONLY: the GET endpoints
+    # below work, but POST/DELETE return 405 Method Not Allowed. Coverage must therefore
+    # be created/removed via the Spira UI. These methods exist so MCP callers can READ
+    # coverage correctly when reasoning about "what tests cover what requirements."
+
+    def get_test_coverage_for_requirement(self, product_id, requirement_id):
+        """List the test cases covering a requirement. READ-ONLY in current Spira REST API."""
+        return self._get(f"projects/{product_id}/requirements/{requirement_id}/test-cases") or []
+
+    def get_requirements_covered_by_test_case(self, product_id, test_case_id):
+        """List the requirements a test case covers. READ-ONLY in current Spira REST API."""
+        return self._get(f"projects/{product_id}/test-cases/{test_case_id}/requirements") or []
 
     def create_test_case(self, product_id, name, description="", test_case_type_id=None,
                          test_case_priority_id=None, owner_id=None, test_case_folder_id=None,
@@ -500,36 +593,38 @@ class SpiraClient:
         """Update a test case. GETs current state first for ConcurrencyDate.
 
         Merges `updates` into the existing object and PUTs the result.
-        Returns the updated test case.
+        Spira's PUT returns 200 with no body, so we re-fetch the test case to return
+        the canonical updated object for downstream formatting.
         """
         current = self.get_test_case(product_id, test_case_id)
         if not current:
             raise SpiraApiError(404, f"Test case {test_case_id} not found", "")
 
-        # Merge updates into current object
         for key, value in updates.items():
             if value is not None:
                 current[key] = value
 
-        return self._put(f"projects/{product_id}/test-cases", body=current)
+        self._put(f"projects/{product_id}/test-cases", body=current)
+        return self.get_test_case(product_id, test_case_id)
 
     def update_test_step(self, product_id, test_case_id, test_step_id, **updates):
         """Update a single test step. GETs current state first for ConcurrencyDate.
 
-        Merges `updates` into the existing step and PUTs the result.
-        Returns the updated test step.
+        Merges `updates` into the existing step and PUTs the result. Spira's PUT
+        returns 200 with no body, so we re-fetch and return the canonical step.
         """
         steps = self.get_test_steps(product_id, test_case_id)
         current = next((s for s in steps if s.get("TestStepId") == test_step_id), None)
         if not current:
             raise SpiraApiError(404, f"Test step {test_step_id} not found in TC:{test_case_id}", "")
 
-        # Merge updates into current step
         for key, value in updates.items():
             if value is not None:
                 current[key] = value
 
-        return self._put(f"projects/{product_id}/test-cases/{test_case_id}/test-steps", body=current)
+        self._put(f"projects/{product_id}/test-cases/{test_case_id}/test-steps", body=current)
+        steps_after = self.get_test_steps(product_id, test_case_id)
+        return next((s for s in steps_after if s.get("TestStepId") == test_step_id), None)
 
     def create_test_step(self, product_id, test_case_id, description,
                          expected_result="", sample_data=""):
@@ -578,7 +673,9 @@ class SpiraClient:
     def record_test_run(self, product_id, test_case_id, execution_status_id,
                         test_name, short_message="", long_message="", error_count=0,
                         release_id=None, test_set_id=None, build_id=None):
-        body = [{
+        # Spira's /test-runs/record endpoint takes a single object, not an array.
+        # Sending an array fails with "Cannot deserialize the current JSON array... into type".
+        body = {
             "TestCaseId": test_case_id,
             "ExecutionStatusId": execution_status_id,
             "RunnerName": test_name,
@@ -586,13 +683,13 @@ class SpiraClient:
             "RunnerStackTrace": long_message,
             "CountFailures": error_count,
             "RunnerTestName": test_name,
-        }]
+        }
         if release_id is not None:
-            body[0]["ReleaseId"] = release_id
+            body["ReleaseId"] = release_id
         if test_set_id is not None:
-            body[0]["TestSetId"] = test_set_id
+            body["TestSetId"] = test_set_id
         if build_id is not None:
-            body[0]["BuildId"] = build_id
+            body["BuildId"] = build_id
         return self._post(f"projects/{product_id}/test-runs/record", body=body)
 
     # ──────────────────────────────────────────────
@@ -629,7 +726,8 @@ class SpiraClient:
     # ──────────────────────────────────────────────
 
     def get_test_case_folders(self, product_id):
-        return self._get(f"projects/{product_id}/test-case-folders") or []
+        # Spira's endpoint is `test-folders`, not `test-case-folders` (which 404s).
+        return self._get(f"projects/{product_id}/test-folders") or []
 
     # ──────────────────────────────────────────────
     #  Associations
@@ -675,17 +773,29 @@ class SpiraClient:
     # ──────────────────────────────────────────────
 
     def get_test_sets(self, product_id):
-        """Get test sets by iterating through test set folders."""
+        """Get all test sets in a product — root-level plus those inside folders.
+
+        Spira's `/test-sets` endpoint returns root-level test sets but requires
+        starting_row/number_of_rows params (it 406s without them). Sets inside
+        folders are fetched via the per-folder sub-resource.
+        """
+        all_sets = list(self._paginate_get(f"projects/{product_id}/test-sets") or [])
+        seen = {s.get("TestSetId") for s in all_sets if s.get("TestSetId") is not None}
+
         folders = self._get(f"projects/{product_id}/test-set-folders") or []
-        all_sets = []
         for folder in folders:
             folder_id = folder.get("TestSetFolderId")
-            if folder_id is not None:
-                sets = self._get(
-                    f"projects/{product_id}/test-set-folders/{folder_id}/test-sets",
-                    params={"starting_row": 1, "number_of_rows": 500},
-                ) or []
-                all_sets.extend(sets)
+            if folder_id is None:
+                continue
+            sets = self._get(
+                f"projects/{product_id}/test-set-folders/{folder_id}/test-sets",
+                params={"starting_row": 1, "number_of_rows": 500},
+            ) or []
+            for s in sets:
+                sid = s.get("TestSetId")
+                if sid is not None and sid not in seen:
+                    all_sets.append(s)
+                    seen.add(sid)
         return all_sets
 
     # ──────────────────────────────────────────────
@@ -701,9 +811,12 @@ class SpiraClient:
 
     def create_build(self, product_id, release_id, name, description="",
                      build_status_id=1, commits=None):
+        # ReleaseId must also appear in the body — Spira deserializes it from the body,
+        # not the URL, and missing it surfaces as "associated release/sprint RL0 does not exist".
         body = {
             "Name": name,
             "Description": description,
+            "ReleaseId": release_id,
             "BuildStatusId": build_status_id,
             "Revisions": [{"RevisionKey": c} for c in (commits or [])],
         }

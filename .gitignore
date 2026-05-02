@@ -7,7 +7,22 @@ build/
 *.egg
 .venv/
 venv/
-.env
 *.log
 .pytest_cache/
 .mypy_cache/
+
+# OS
+.DS_Store
+
+# Environment files (anywhere in the tree) — keep .env.sample committed
+.env
+**/.env
+!.env.sample
+!**/.env.sample
+
+# Claude Code — personal config and project memory, never commit
+.claude/
+CLAUDE.md
+
+# Local test suite — not pushed
+tests/
