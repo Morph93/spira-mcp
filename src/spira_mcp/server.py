@@ -23,8 +23,16 @@ mcp = FastMCP(
 )
 
 
+_CLIENT_CACHE = {}
+
+
 def _get_client():
-    """Create a SpiraClient from environment variables."""
+    """Return a SpiraClient for the env-configured instance.
+
+    Cached per credentials so the underlying requests.Session (and its connection
+    pool) is reused across tool calls instead of re-handshaking TLS every time
+    (fix.md F14).
+    """
     base_url = os.environ.get("INFLECTRA_SPIRA_BASE_URL")
     username = os.environ.get("INFLECTRA_SPIRA_USERNAME")
     api_key = os.environ.get("INFLECTRA_SPIRA_API_KEY")
@@ -40,7 +48,12 @@ def _get_client():
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-    return SpiraClient(base_url, username, api_key)
+    key = (base_url, username, api_key)
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+        client = SpiraClient(base_url, username, api_key)
+        _CLIENT_CACHE[key] = client
+    return client
 
 
 def _custom_meta(client, product_id, artifact_type_name):
@@ -52,6 +65,22 @@ def _custom_meta(client, product_id, artifact_type_name):
     """
     template_id = client.get_template_id_for_product(product_id)
     return client.get_custom_properties_for_artifact_type(template_id, artifact_type_name)
+
+
+def _resolved_custom_filters(client, product_id, artifact_type_name, custom_property_filters):
+    """Resolve a {name: value} custom-filter dict into validated RemoteFilter entries."""
+    if not custom_property_filters:
+        return []
+    template_id = client.get_template_id_for_product(product_id)
+    return client.resolve_custom_filters_for(template_id, artifact_type_name, custom_property_filters)
+
+
+def _resolved_custom_values(client, product_id, artifact_type_name, custom_properties):
+    """Resolve a {name: value} custom-write dict into CustomProperties body entries."""
+    if not custom_properties:
+        return None
+    template_id = client.get_template_id_for_product(product_id)
+    return client.resolve_custom_values_for(template_id, artifact_type_name, custom_properties)
 
 
 # ──────────────────────────────────────────────
@@ -132,9 +161,10 @@ def get_template(template_id: int) -> str:
 
 @mcp.tool()
 def list_artifact_types(template_id: int) -> str:
-    """List all artifact types (requirement types, incident types, task types, etc.) for a template.
+    """List artifact types AND template-specific statuses/priorities/importances/severities.
 
-    Use this to discover valid type IDs for create/update tools.
+    THE discovery tool for valid IDs to pass to create/update tools — status, priority,
+    importance and severity IDs vary per template; never assume the Spira defaults.
     Get the template_id from the product details (get_product) or list_templates.
     """
     client = _get_client()
@@ -171,6 +201,64 @@ def list_custom_properties(
 
     meta = client.get_custom_properties_for_artifact_type(template_id, artifact_type_name)
     return formatters.format_custom_properties(artifact_type_name, meta["fields"])
+
+
+# ──────────────────────────────────────────────
+#  Users & Components
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_users(product_id: int) -> str:
+    """List the active users of a product with their user IDs, roles, and emails.
+
+    Use this to resolve a person's name to the owner_id / user ID that the
+    create/update tools expect (e.g. "assign to John" -> UserId).
+    """
+    client = _get_client()
+    users = client.get_project_users(product_id)
+    return formatters.format_users(users)
+
+
+@mcp.tool()
+def list_components(product_id: int, active_only: bool = True) -> str:
+    """List the components of a product (ComponentId + name).
+
+    Components categorize requirements, test cases, and incidents within a product.
+    """
+    client = _get_client()
+    components = client.get_components(product_id, active_only=active_only)
+    return formatters.format_components(components)
+
+
+# ──────────────────────────────────────────────
+#  Comments
+# ──────────────────────────────────────────────
+
+@mcp.tool()
+def list_comments(product_id: int, artifact_type: str, artifact_id: int) -> str:
+    """List the comments on an incident, task, or requirement.
+
+    - artifact_type: incident, task, or requirement
+    - artifact_id: The ID of the artifact
+    """
+    client = _get_client()
+    comments = client.get_comments(product_id, artifact_type, artifact_id)
+    prefix = {"incident": "IN", "task": "TK", "requirement": "RQ"}.get(artifact_type, "?")
+    return formatters.format_comments(f"{prefix}:{artifact_id}", comments)
+
+
+@mcp.tool()
+def add_comment(product_id: int, artifact_type: str, artifact_id: int, text: str) -> str:
+    """Add a comment to an incident, task, or requirement.
+
+    - artifact_type: incident, task, or requirement
+    - artifact_id: The ID of the artifact
+    - text: Comment text (supports HTML)
+    """
+    client = _get_client()
+    client.add_comment(product_id, artifact_type, artifact_id, text)
+    prefix = {"incident": "IN", "task": "TK", "requirement": "RQ"}.get(artifact_type, "?")
+    return f"Comment added to {prefix}:{artifact_id}."
 
 
 # ──────────────────────────────────────────────
@@ -252,6 +340,27 @@ def get_release(product_id: int, release_id: int) -> str:
     return formatters.format_release(release)
 
 
+@mcp.tool()
+def add_test_cases_to_release(product_id: int, release_id: int, test_case_ids: list[int]) -> str:
+    """Map test cases to a release/sprint so they appear in its test plan.
+
+    Mapped test cases show up in list_test_cases(release_id=...) and count toward
+    the release's execution metrics.
+    """
+    client = _get_client()
+    client.add_test_cases_to_release(product_id, release_id, test_case_ids)
+    ids = ", ".join(f"TC:{t}" for t in test_case_ids)
+    return f"Mapped {ids} to RL:{release_id}."
+
+
+@mcp.tool()
+def remove_test_case_from_release(product_id: int, release_id: int, test_case_id: int) -> str:
+    """Remove a test case from a release/sprint's test plan."""
+    client = _get_client()
+    client.remove_test_case_from_release(product_id, release_id, test_case_id)
+    return f"TC:{test_case_id} removed from RL:{release_id}."
+
+
 # ──────────────────────────────────────────────
 #  Requirements
 # ──────────────────────────────────────────────
@@ -263,6 +372,8 @@ def list_requirements(
     status_id: int | None = None,
     importance_id: int | None = None,
     owner_id: int | None = None,
+    custom_property_filters: dict | None = None,
+    limit: int | None = None,
 ) -> str:
     """List requirements for a product with optional filters.
 
@@ -271,6 +382,13 @@ def list_requirements(
     - status_id: Filter by status (1=Requested, 2=Planned, 3=In Progress, 4=Developed, 5=Accepted, 6=Rejected, 7=Under Review, 8=Obsolete, 9=Tested, 10=Completed)
     - importance_id: Filter by importance (1=Critical, 2=High, 3=Medium, 4=Low)
     - owner_id: Filter by owner user ID
+    - custom_property_filters: {"<custom field name>": <value>} — names and list-option
+      labels are resolved against template metadata (discover via list_custom_properties).
+      Unknown names/labels error out instead of being silently ignored by Spira.
+    - limit: Return at most N requirements (default: all — large products can return thousands)
+
+    Note: status/importance IDs are template-specific — the legends above are Spira
+    defaults and may not match this instance (see update_requirement note).
     """
     client = _get_client()
     requirements = client.get_requirements(
@@ -279,8 +397,13 @@ def list_requirements(
         status_id=status_id,
         importance_id=importance_id,
         owner_id=owner_id,
+        limit=limit,
+        extra_filters=_resolved_custom_filters(client, product_id, "Requirement", custom_property_filters),
     )
-    return formatters.format_requirements(requirements)
+    out = formatters.format_requirements(requirements)
+    if limit is not None and len(requirements) == limit:
+        out += f"\n\n_Showing first {limit} — more may exist; raise limit or add filters._"
+    return out
 
 
 @mcp.tool()
@@ -304,6 +427,7 @@ def create_requirement(
     owner_id: int | None = None,
     release_id: int | None = None,
     parent_requirement_id: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Create a new requirement in Spira.
 
@@ -313,10 +437,11 @@ def create_requirement(
     Optional:
     - description: Detailed description (supports HTML)
     - requirement_type_id: Type (project-specific)
-    - importance_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - importance_id: 1=Critical, 2=High, 3=Medium, 4=Low (Spira default — template-specific, see update_requirement note)
     - owner_id: User ID to assign
     - release_id: Release/sprint to assign to
     - parent_requirement_id: Create as a child of this requirement
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     client = _get_client()
     result = client.create_requirement(
@@ -326,6 +451,7 @@ def create_requirement(
         owner_id=owner_id,
         release_id=release_id,
         parent_requirement_id=parent_requirement_id,
+        custom_properties=_resolved_custom_values(client, product_id, "Requirement", custom_properties),
     )
     req_id = result.get("RequirementId", "?") if isinstance(result, dict) else "?"
     custom_meta = _custom_meta(client, product_id, "Requirement")
@@ -342,14 +468,15 @@ def update_requirement(
     importance_id: int | None = None,
     owner_id: int | None = None,
     release_id: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Update a requirement. Only pass the fields you want to change.
+    Fields can only be SET, not cleared — None/omitted leaves a field unchanged.
 
     Note: status/importance IDs are template-specific. The 1=Critical/2=High/3=Medium/4=Low
     mapping is the Spira default but does NOT apply to all instances — many templates use
-    custom IDs. To find the valid IDs for this product's template, hit
-    /project-templates/{template_id}/requirements/importances (or use list_custom_properties
-    for custom-list-backed fields).
+    custom IDs. To find the valid IDs for this product's template, use the list_artifact_types tool
+    (statuses/importances included; use list_custom_properties for custom fields).
 
     Fields (all optional):
     - name: Requirement title
@@ -358,6 +485,7 @@ def update_requirement(
     - importance_id: importance ID (template-specific — see note above)
     - owner_id: User ID to assign
     - release_id: Release/sprint to assign to
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     updates = {}
     if name is not None:
@@ -365,7 +493,10 @@ def update_requirement(
     if description is not None:
         updates["Description"] = description
     if requirement_status_id is not None:
-        updates["RequirementStatusId"] = requirement_status_id
+        # PUT-body field is StatusId — "RequirementStatusId" is silently ignored by
+        # Spira (fix.md F1). The search FILTER property is RequirementStatusId though;
+        # the two namespaces differ — don't unify them (fix.md F2).
+        updates["StatusId"] = requirement_status_id
     if importance_id is not None:
         updates["ImportanceId"] = importance_id
     if owner_id is not None:
@@ -373,11 +504,12 @@ def update_requirement(
     if release_id is not None:
         updates["ReleaseId"] = release_id
 
-    if not updates:
+    client = _get_client()
+    resolved_customs = _resolved_custom_values(client, product_id, "Requirement", custom_properties)
+    if not updates and not resolved_customs:
         return "No fields to update. Pass at least one field to change."
 
-    client = _get_client()
-    result = client.update_requirement(product_id, requirement_id, **updates)
+    result = client.update_requirement(product_id, requirement_id, custom_properties=resolved_customs, **updates)
     custom_meta = _custom_meta(client, product_id, "Requirement")
     return f"Requirement RQ:{requirement_id} updated successfully.\n\n{formatters.format_requirement(result, custom_meta=custom_meta)}"
 
@@ -392,6 +524,7 @@ def list_tasks(
     release_id: int | None = None,
     status_id: int | None = None,
     owner_id: int | None = None,
+    limit: int | None = None,
 ) -> str:
     """List tasks for a product with optional filters.
 
@@ -404,6 +537,10 @@ def list_tasks(
     - release_id: Filter by the task's own release/sprint assignment
     - status_id: Filter by status (1=Not Started, 2=In Progress, 3=Completed, 4=Blocked, 5=Deferred)
     - owner_id: Filter by owner user ID
+    - limit: Return at most N tasks (default: all — large products can return thousands)
+
+    Note: status IDs are template-specific — the legend above is the Spira default
+    and may not match this instance (see update_task note).
     """
     client = _get_client()
     tasks = client.get_tasks(
@@ -411,8 +548,12 @@ def list_tasks(
         release_id=release_id,
         status_id=status_id,
         owner_id=owner_id,
+        limit=limit,
     )
-    return formatters.format_tasks(tasks)
+    out = formatters.format_tasks(tasks)
+    if limit is not None and len(tasks) == limit:
+        out += f"\n\n_Showing first {limit} — more may exist; raise limit or add filters._"
+    return out
 
 
 @mcp.tool()
@@ -451,6 +592,7 @@ def create_task(
     release_id: int | None = None,
     requirement_id: int | None = None,
     estimated_effort: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Create a new task in Spira.
 
@@ -461,10 +603,12 @@ def create_task(
     - description: Detailed description
     - task_status_id: 1=Not Started (default), 2=In Progress, 3=Completed, 4=Blocked, 5=Deferred
     - task_priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
+      (status/priority IDs are Spira defaults — template-specific, see update_task note)
     - owner_id: User ID to assign
     - release_id: Release/sprint to assign to
     - requirement_id: Parent requirement to link to
     - estimated_effort: Estimated effort in minutes
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     client = _get_client()
     result = client.create_task(
@@ -475,6 +619,7 @@ def create_task(
         release_id=release_id,
         requirement_id=requirement_id,
         estimated_effort=estimated_effort,
+        custom_properties=_resolved_custom_values(client, product_id, "Task", custom_properties),
     )
     task_id = result.get("TaskId", "?") if isinstance(result, dict) else "?"
     custom_meta = _custom_meta(client, product_id, "Task")
@@ -494,12 +639,14 @@ def update_task(
     estimated_effort: int | None = None,
     actual_effort: int | None = None,
     remaining_effort: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Update a task. Only pass the fields you want to change.
+    Fields can only be SET, not cleared — None/omitted leaves a field unchanged.
 
     Note: status/priority IDs are template-specific. The defaults below are common but
-    do NOT apply to all instances. To find the valid IDs for this product's template,
-    hit /project-templates/{template_id}/tasks/priorities (or /tasks/statuses).
+    do NOT apply to all instances. To find the valid IDs for this product's
+    template, use the list_artifact_types tool (statuses/priorities included).
 
     Fields (all optional):
     - name: Task name
@@ -511,6 +658,7 @@ def update_task(
     - estimated_effort: Estimated effort in minutes
     - actual_effort: Actual effort in minutes
     - remaining_effort: Remaining effort in minutes
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     updates = {}
     if name is not None:
@@ -532,11 +680,12 @@ def update_task(
     if remaining_effort is not None:
         updates["RemainingEffort"] = remaining_effort
 
-    if not updates:
+    client = _get_client()
+    resolved_customs = _resolved_custom_values(client, product_id, "Task", custom_properties)
+    if not updates and not resolved_customs:
         return "No fields to update. Pass at least one field to change."
 
-    client = _get_client()
-    result = client.update_task(product_id, task_id, **updates)
+    result = client.update_task(product_id, task_id, custom_properties=resolved_customs, **updates)
     custom_meta = _custom_meta(client, product_id, "Task")
     return f"Task TK:{task_id} updated successfully.\n\n{formatters.format_task(result, custom_meta=custom_meta)}"
 
@@ -553,6 +702,8 @@ def list_incidents(
     priority_id: int | None = None,
     severity_id: int | None = None,
     owner_id: int | None = None,
+    custom_property_filters: dict | None = None,
+    limit: int | None = None,
 ) -> str:
     """List incidents for a product with optional filters.
 
@@ -562,6 +713,13 @@ def list_incidents(
     - priority_id: Filter by priority (1=Critical, 2=High, 3=Medium, 4=Low)
     - severity_id: Filter by severity (1=Critical, 2=High, 3=Medium, 4=Low)
     - owner_id: Filter by owner user ID
+    - custom_property_filters: {"<custom field name>": <value>} — names and list-option
+      labels are resolved against template metadata (discover via list_custom_properties).
+      Unknown names/labels error out instead of being silently ignored by Spira.
+    - limit: Return at most N incidents (default: all — large products can return thousands)
+
+    Note: status/priority/severity IDs are template-specific — the legends above are
+    Spira defaults and may not match this instance (see update_incident note).
     """
     client = _get_client()
     incidents = client.get_incidents(
@@ -571,8 +729,13 @@ def list_incidents(
         priority_id=priority_id,
         severity_id=severity_id,
         owner_id=owner_id,
+        limit=limit,
+        extra_filters=_resolved_custom_filters(client, product_id, "Incident", custom_property_filters),
     )
-    return formatters.format_incidents(incidents)
+    out = formatters.format_incidents(incidents)
+    if limit is not None and len(incidents) == limit:
+        out += f"\n\n_Showing first {limit} — more may exist; raise limit or add filters._"
+    return out
 
 
 @mcp.tool()
@@ -594,6 +757,7 @@ def create_incident(
     severity_id: int | None = None,
     owner_id: int | None = None,
     detected_release_id: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Create a new incident/bug in Spira.
 
@@ -605,8 +769,10 @@ def create_incident(
     - incident_type_id: Type of incident (project-specific, check get_product for available types)
     - priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
     - severity_id: 1=Critical, 2=High, 3=Medium, 4=Low
+      (priority/severity IDs are Spira defaults — template-specific, see update_incident note)
     - owner_id: User ID to assign
     - detected_release_id: Release where the bug was found
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     client = _get_client()
     result = client.create_incident(
@@ -616,6 +782,7 @@ def create_incident(
         severity_id=severity_id,
         owner_id=owner_id,
         detected_release_id=detected_release_id,
+        custom_properties=_resolved_custom_values(client, product_id, "Incident", custom_properties),
     )
     inc_id = result.get("IncidentId", "?") if isinstance(result, dict) else "?"
     custom_meta = _custom_meta(client, product_id, "Incident")
@@ -634,12 +801,13 @@ def update_incident(
     owner_id: int | None = None,
     detected_release_id: int | None = None,
     resolved_release_id: int | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Update an incident. Only pass the fields you want to change.
+    Fields can only be SET, not cleared — None/omitted leaves a field unchanged.
 
     Note: status/priority/severity IDs are template-specific. To find the valid IDs for
-    this product's template, hit /project-templates/{template_id}/incidents/priorities
-    (also /severities, /statuses).
+    this product's template, use the list_artifact_types tool (statuses/priorities/severities included).
 
     Fields (all optional):
     - name: Incident title
@@ -650,6 +818,7 @@ def update_incident(
     - owner_id: User ID to assign
     - detected_release_id: Release where the bug was found
     - resolved_release_id: Release where the bug was fixed
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     updates = {}
     if name is not None:
@@ -669,11 +838,12 @@ def update_incident(
     if resolved_release_id is not None:
         updates["ResolvedReleaseId"] = resolved_release_id
 
-    if not updates:
+    client = _get_client()
+    resolved_customs = _resolved_custom_values(client, product_id, "Incident", custom_properties)
+    if not updates and not resolved_customs:
         return "No fields to update. Pass at least one field to change."
 
-    client = _get_client()
-    result = client.update_incident(product_id, incident_id, **updates)
+    result = client.update_incident(product_id, incident_id, custom_properties=resolved_customs, **updates)
     custom_meta = _custom_meta(client, product_id, "Incident")
     return f"Incident IN:{incident_id} updated successfully.\n\n{formatters.format_incident(result, custom_meta=custom_meta)}"
 
@@ -683,17 +853,33 @@ def update_incident(
 # ──────────────────────────────────────────────
 
 @mcp.tool()
-def list_test_cases(product_id: int, release_id: int | None = None) -> str:
-    """List test cases for a product, optionally filtered by release.
+def list_test_cases(
+    product_id: int,
+    release_id: int | None = None,
+    custom_property_filters: dict | None = None,
+    limit: int | None = None,
+) -> str:
+    """List test cases for a product, optionally filtered by release and/or custom fields.
 
     - release_id: Filter to test cases mapped to this release/sprint
+    - custom_property_filters: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"}.
+      Names and list-option labels are resolved against template metadata (discover via
+      list_custom_properties). Unknown names/labels error out instead of being silently
+      ignored by Spira.
+    - limit: Return at most N test cases (default: all — large products can return thousands)
     """
     client = _get_client()
-    if release_id:
-        test_cases = client.get_test_cases_by_release(product_id, release_id)
+    # Root endpoint takes release_id directly and returns full objects; the
+    # /releases/{id}/test-cases sub-resource returns bare ID pairs (fix.md F3).
+    if custom_property_filters:
+        filters = _resolved_custom_filters(client, product_id, "TestCase", custom_property_filters)
+        test_cases = client.search_test_cases(product_id, filters, release_id=release_id, limit=limit)
     else:
-        test_cases = client.get_test_cases(product_id)
-    return formatters.format_test_cases(test_cases)
+        test_cases = client.get_test_cases(product_id, release_id=release_id, limit=limit)
+    out = formatters.format_test_cases(test_cases)
+    if limit is not None and len(test_cases) == limit:
+        out += f"\n\n_Showing first {limit} — more may exist; raise limit or add filters._"
+    return out
 
 
 @mcp.tool()
@@ -716,10 +902,7 @@ def list_test_coverage(product_id: int, requirement_id: int) -> str:
     coverage and don't show up in the Test Coverage view.
 
     Use this tool when you want to know which tests cover a requirement.
-
-    Note: Spira's REST API exposes test coverage as READ-ONLY in the current version.
-    To add or remove a coverage link, use the Spira UI's Test Coverage tab on the
-    requirement (or the test case's Requirements tab).
+    To add or remove a coverage link, use create_test_coverage / delete_test_coverage.
     """
     client = _get_client()
     test_cases = client.get_test_coverage_for_requirement(product_id, requirement_id)
@@ -732,13 +915,35 @@ def list_covered_requirements(product_id: int, test_case_id: int) -> str:
 
     Same first-class Test Coverage relationship as list_test_coverage, viewed from
     the test case side.
-
-    Note: Spira's REST API exposes test coverage as READ-ONLY in the current version.
-    To add or remove a coverage link, use the Spira UI.
+    To add or remove a coverage link, use create_test_coverage / delete_test_coverage.
     """
     client = _get_client()
     requirements = client.get_requirements_covered_by_test_case(product_id, test_case_id)
     return formatters.format_requirements_covered_by_test_case(test_case_id, requirements)
+
+
+@mcp.tool()
+def create_test_coverage(product_id: int, requirement_id: int, test_case_id: int) -> str:
+    """Add a Test Coverage link so the test case covers the requirement.
+
+    This is Spira's first-class coverage relationship — it updates the requirement's
+    CoverageCount* metrics and shows up in the "Test Coverage" UI tab. Use this (NOT
+    create_association) to link a test case to a requirement.
+    """
+    client = _get_client()
+    client.add_test_coverage(product_id, requirement_id, test_case_id)
+    return f"Test coverage added: TC:{test_case_id} now covers RQ:{requirement_id}."
+
+
+@mcp.tool()
+def delete_test_coverage(product_id: int, requirement_id: int, test_case_id: int) -> str:
+    """Remove a Test Coverage link between a requirement and a test case.
+
+    Use list_test_coverage first to see which test cases cover the requirement.
+    """
+    client = _get_client()
+    client.remove_test_coverage(product_id, requirement_id, test_case_id)
+    return f"Test coverage removed: TC:{test_case_id} no longer covers RQ:{requirement_id}."
 
 
 @mcp.tool()
@@ -752,6 +957,7 @@ def create_test_case(
     test_case_folder_id: int | None = None,
     estimated_duration: int | None = None,
     tags: str = "",
+    custom_properties: dict | None = None,
 ) -> str:
     """Create a new test case in Spira.
 
@@ -761,11 +967,12 @@ def create_test_case(
     Optional:
     - description: Detailed description (supports HTML)
     - test_case_type_id: Type (project-specific)
-    - test_case_priority_id: 1=Critical, 2=High, 3=Medium, 4=Low
+    - test_case_priority_id: 1=Critical, 2=High, 3=Medium, 4=Low (Spira default — template-specific, see update_test_case note)
     - owner_id: User ID to assign
     - test_case_folder_id: Folder to place it in (null = root)
     - estimated_duration: Estimated duration in minutes
     - tags: Comma-separated tags
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     client = _get_client()
     result = client.create_test_case(
@@ -776,6 +983,7 @@ def create_test_case(
         test_case_folder_id=test_case_folder_id,
         estimated_duration=estimated_duration,
         tags=tags,
+        custom_properties=_resolved_custom_values(client, product_id, "TestCase", custom_properties),
     )
     tc_id = result.get("TestCaseId", "?") if isinstance(result, dict) else "?"
     custom_meta = _custom_meta(client, product_id, "TestCase")
@@ -795,15 +1003,16 @@ def update_test_case(
     estimated_duration: int | None = None,
     test_case_folder_id: int | None = None,
     tags: str | None = None,
+    custom_properties: dict | None = None,
 ) -> str:
     """Update a test case. Only pass the fields you want to change — all others are preserved.
+    Fields can only be SET, not cleared — None/omitted leaves a field unchanged.
 
     Automatically handles optimistic concurrency (GETs current state first, then PUTs).
 
     Note: status/priority IDs are template-specific. The 1=Draft etc. mapping is the
     Spira default but does NOT apply to all instances. To find the valid IDs for this
-    product's template, hit /project-templates/{template_id}/test-cases/priorities
-    (also /statuses).
+    product's template, use the list_artifact_types tool (statuses/priorities included).
 
     Fields (all optional — only pass what you want to change):
     - name: Test case name
@@ -815,6 +1024,7 @@ def update_test_case(
     - estimated_duration: Estimated duration in minutes
     - test_case_folder_id: Move to a different folder
     - tags: Comma-separated tags
+    - custom_properties: {"<custom field name>": <value>}, e.g. {"Automated": "Yes"} — labels resolved to option IDs via template metadata; unknown names/labels error out
     """
     updates = {}
     if name is not None:
@@ -836,11 +1046,12 @@ def update_test_case(
     if tags is not None:
         updates["Tags"] = tags
 
-    if not updates:
+    client = _get_client()
+    resolved_customs = _resolved_custom_values(client, product_id, "TestCase", custom_properties)
+    if not updates and not resolved_customs:
         return "No fields to update. Pass at least one field to change."
 
-    client = _get_client()
-    result = client.update_test_case(product_id, test_case_id, **updates)
+    result = client.update_test_case(product_id, test_case_id, custom_properties=resolved_customs, **updates)
     custom_meta = _custom_meta(client, product_id, "TestCase")
     return f"Test case TC:{test_case_id} updated successfully.\n\n{formatters.format_test_case(result, custom_meta=custom_meta)}"
 
@@ -916,11 +1127,18 @@ def delete_test_step(product_id: int, test_case_id: int, test_step_id: int) -> s
 # ──────────────────────────────────────────────
 
 @mcp.tool()
-def list_test_runs(product_id: int) -> str:
-    """List recent test runs for a product, sorted by most recent first."""
+def list_test_runs(product_id: int, limit: int | None = None) -> str:
+    """List recent test runs for a product, sorted by most recent first.
+
+    - limit: Return at most N runs (default: all — long-lived products accumulate
+      thousands of runs; a limit of 20-50 is usually plenty)
+    """
     client = _get_client()
-    runs = client.get_test_runs(product_id)
-    return formatters.format_test_runs(runs)
+    runs = client.get_test_runs(product_id, limit=limit)
+    out = formatters.format_test_runs(runs)
+    if limit is not None and len(runs) == limit:
+        out += f"\n\n_Showing first {limit} — more may exist; raise limit._"
+    return out
 
 
 @mcp.tool()
@@ -940,42 +1158,56 @@ def create_test_run(
     test_case_ids: list[int],
     release_id: int | None = None,
 ) -> str:
-    """Create test run shells from test case IDs. Steps are pre-populated from the test cases.
+    """Preview test run shells for test cases — shows the steps each run will contain.
 
-    Use this to start manual test execution. After creating, use save_test_run_results
-    to fill in per-step results.
+    NOTE: shells are NOT persisted (Spira returns them with TestRunId=0). To actually
+    execute and save a run, call save_test_run_results with test_case_id — it creates
+    the shell, applies your per-step results, and saves, all in one call.
 
-    - test_case_ids: List of test case IDs to create runs for, e.g. [290, 283]
+    - test_case_ids: List of test case IDs to preview runs for, e.g. [290, 283]
     - release_id: Optional release to associate the runs with
     """
     client = _get_client()
     runs = client.create_test_runs(product_id, test_case_ids, release_id=release_id)
     if not runs:
-        return "No test runs created."
-    lines = [f"Created {len(runs)} test run(s):\n"]
+        return "No test run shells returned."
+    lines = [f"Prepared {len(runs)} test run shell(s) — NOT yet saved:\n"]
     for r in (runs if isinstance(runs, list) else [runs]):
         steps = r.get("TestRunSteps") or []
+        positions = [s.get("Position") for s in steps]
         lines.append(
-            f"- **Run #{r.get('TestRunId')}** — TC:{r.get('TestCaseId')} "
-            f"({len(steps)} steps pre-populated)"
+            f"- TC:{r.get('TestCaseId')} — {len(steps)} steps pre-populated "
+            f"(positions: {positions})"
         )
+    lines.append(
+        "\nCall save_test_run_results(test_case_id=..., step_results=[...]) to execute and save."
+    )
     return "\n".join(lines)
 
 
 @mcp.tool()
 def save_test_run_results(
     product_id: int,
-    test_run_id: int,
     step_results: list[dict],
+    test_case_id: int | None = None,
+    release_id: int | None = None,
+    test_run_id: int | None = None,
     end_date: str | None = None,
 ) -> str:
-    """Save test run results with per-step execution status and actual results.
+    """Execute a test case and save per-step results as a new test run (KB684 flow).
 
-    Fetches the current test run, applies your step results, and saves.
+    Recommended usage: pass test_case_id — this creates a run shell, applies your
+    per-step results, and saves it in ONE call. (Shells are not persisted until
+    saved, and Spira rejects re-saving an already-saved run — verified live — so
+    the one-shot path is the reliable one.)
+
     Do NOT set the overall test run status — Spira calculates it from the step statuses.
 
     Parameters:
-    - test_run_id: The test run ID (from create_test_run or list_test_runs)
+    - test_case_id: Test case to execute (recommended path)
+    - release_id: Optional release/sprint to record the run against (with test_case_id)
+    - test_run_id: ADVANCED alternative — an existing pending run to fill in; most
+      instances reject re-saving an already-saved run with a 400
     - step_results: Array of step result objects. Each object:
       - position (int, required): Step position number (1-based)
       - execution_status_id (int, required): 1=Failed, 2=Passed, 3=Not Run, 4=N/A, 5=Blocked, 6=Caution
@@ -992,16 +1224,41 @@ def save_test_run_results(
     from datetime import datetime, timezone
 
     client = _get_client()
-    run = client.get_test_run(product_id, test_run_id)
-    if not run:
-        return f"Test run #{test_run_id} not found."
+    if (test_case_id is None) == (test_run_id is None):
+        return ("Provide exactly one of test_case_id (recommended — creates and saves "
+                "a new run) or test_run_id (existing pending run).")
 
+    if test_case_id is not None:
+        shells = client.create_test_runs(product_id, [test_case_id], release_id=release_id)
+        if not shells:
+            return f"Could not create a test run shell for TC:{test_case_id}."
+        run = shells[0]
+    else:
+        run = client.get_test_run(product_id, test_run_id)
+        if not run:
+            return f"Test run #{test_run_id} not found."
+
+    run_label = f"TC:{test_case_id}" if test_case_id is not None else f"#{test_run_id}"
     steps = run.get("TestRunSteps") or []
     if not steps:
-        return f"Test run #{test_run_id} has no steps."
+        return f"Test run for {run_label} has no steps."
 
-    # Build a lookup by position
-    result_lookup = {r["position"]: r for r in step_results}
+    # Validate every entry up front — a typo'd position used to be silently
+    # dropped, saving the run with that step still "Not Run" (fix.md F8).
+    valid_positions = sorted(s.get("Position") for s in steps if s.get("Position") is not None)
+    result_lookup = {}
+    problems = []
+    for i, sr in enumerate(step_results, 1):
+        if not isinstance(sr, dict) or "position" not in sr or "execution_status_id" not in sr:
+            problems.append(f"entry #{i} must be an object with 'position' and 'execution_status_id'")
+            continue
+        if sr["position"] not in valid_positions:
+            problems.append(f"entry #{i}: position {sr['position']} not in this run "
+                            f"(valid positions: {valid_positions})")
+            continue
+        result_lookup[sr["position"]] = sr
+    if problems:
+        return "step_results invalid — nothing was saved:\n- " + "\n- ".join(problems)
 
     # Apply results to each step
     for step in steps:
@@ -1015,17 +1272,22 @@ def save_test_run_results(
         step["TestRunStepId"] = 0
         step["TestRunId"] = 0
 
-    # Set end date
+    # Set end date. Spira's end_date query param requires yyyy-MM-ddTHH:mm:ss.fff —
+    # a trailing 'Z' is rejected with a 406 (verified live).
     if not end_date:
-        end_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        end_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000")
+    end_date = end_date.rstrip("Zz")
 
     run["EndDate"] = end_date
     # Remove overall ExecutionStatusId — let Spira calculate from steps
     run.pop("ExecutionStatusId", None)
 
+    # end_date also goes in the query string per KB684 (fix.md F8)
     result = client.save_test_runs(product_id, [run], end_date)
     saved = result[0] if isinstance(result, list) and result else result
-    return f"Test run #{test_run_id} saved successfully.\n\n{formatters.format_test_run(saved)}"
+    saved_id = saved.get("TestRunId") if isinstance(saved, dict) else None
+    return (f"Test run for {run_label} saved successfully (Run #{saved_id}).\n\n"
+            f"{formatters.format_test_run(saved)}")
 
 
 @mcp.tool()
@@ -1038,11 +1300,12 @@ def record_test_run(
     long_message: str = "",
     error_count: int = 0,
     release_id: int | None = None,
+    test_set_id: int | None = None,
     build_id: int | None = None,
 ) -> str:
     """Record an automated test run result (simple, no per-step detail).
 
-    For per-step results, use create_test_run + save_test_run_results instead.
+    For per-step results, use save_test_run_results instead.
 
     execution_status_id: 1=Failed, 2=Passed, 3=Not Run, 4=Not Applicable, 5=Blocked, 6=Caution
     """
@@ -1050,7 +1313,7 @@ def record_test_run(
     result = client.record_test_run(
         product_id, test_case_id, execution_status_id,
         test_name, short_message, long_message, error_count,
-        release_id=release_id, build_id=build_id,
+        release_id=release_id, test_set_id=test_set_id, build_id=build_id,
     )
     return f"Test run recorded for TC:{test_case_id} — Status: {formatters.EXECUTION_STATUSES.get(execution_status_id, '?')}"
 
@@ -1073,6 +1336,7 @@ def upload_document(
     description: str = "",
     artifact_type: str | None = None,
     artifact_id: int | None = None,
+    folder_id: int | None = None,
 ) -> str:
     """Upload a file to Spira as a document and optionally attach it to an artifact's Attachments tab.
 
@@ -1099,7 +1363,7 @@ def upload_document(
         binary_data = base64.b64encode(f.read()).decode("ascii")
 
     client = _get_client()
-    doc = client.upload_document(product_id, filename, binary_data, description)
+    doc = client.upload_document(product_id, filename, binary_data, description, folder_id=folder_id)
 
     doc_id = doc.get("AttachmentId") if isinstance(doc, dict) else None
     result = f"Document uploaded: **DC:{doc_id}** — {filename}\n\n{formatters.format_document(doc)}"
@@ -1188,30 +1452,15 @@ def attach_image_to_field(
     - test_case_id: Required when target_type is "test_step" (the parent test case ID)
     """
     import base64
+    import html
     import os
 
-    if not os.path.exists(file_path):
-        return f"File not found: {file_path}"
+    # Step 1: validate everything and resolve the target BEFORE uploading, so bad
+    # input can't orphan an uploaded document (fix.md F9).
+    valid_targets = ("test_step", "test_case", "incident", "requirement", "task")
+    if target_type not in valid_targets:
+        return f"Unknown target_type '{target_type}'. Use: {', '.join(valid_targets)}"
 
-    # Step 1: Upload the file
-    filename = os.path.basename(file_path)
-    with open(file_path, "rb") as f:
-        binary_data = base64.b64encode(f.read()).decode("ascii")
-
-    client = _get_client()
-    doc = client.upload_document(product_id, filename, binary_data)
-    doc_id = doc.get("AttachmentId") if isinstance(doc, dict) else None
-    if not doc_id:
-        return "Failed to upload document — no AttachmentId returned."
-
-    # Step 2: Build the <img> tag
-    img_tag = f'<img src="/{product_id}/Attachment/{doc_id}.aspx" alt="{filename}" />'
-    if caption:
-        img_tag = f'<p>{img_tag}</p><p><em>{caption}</em></p>'
-    else:
-        img_tag = f'<p>{img_tag}</p>'
-
-    # Step 3: Get current field content and append the image
     field_map = {
         "description": "Description",
         "expected_result": "ExpectedResult",
@@ -1219,39 +1468,62 @@ def attach_image_to_field(
     api_field = field_map.get(field)
     if not api_field:
         return f"Unknown field '{field}'. Use: {', '.join(field_map.keys())}"
+    if field == "expected_result" and target_type != "test_step":
+        # Only test steps have ExpectedResult — Spira would silently drop the
+        # unknown field and the image would be lost (fix.md F9).
+        return ("field='expected_result' only exists on test steps. "
+                "Use field='description' for other artifact types.")
+    if target_type == "test_step" and not test_case_id:
+        return "test_case_id is required when target_type is 'test_step'."
 
+    if not os.path.exists(file_path):
+        return f"File not found: {file_path}"
+
+    client = _get_client()
     if target_type == "test_step":
-        if not test_case_id:
-            return "test_case_id is required when target_type is 'test_step'."
         steps = client.get_test_steps(product_id, test_case_id)
         step = next((s for s in steps if s.get("TestStepId") == target_id), None)
         if not step:
             return f"Test step {target_id} not found in TC:{test_case_id}."
         current_content = step.get(api_field) or ""
-        client.update_test_step(product_id, test_case_id, target_id, **{api_field: current_content + img_tag})
-
     elif target_type == "test_case":
-        tc = client.get_test_case(product_id, target_id)
-        current_content = tc.get(api_field) or ""
-        client.update_test_case(product_id, target_id, **{api_field: current_content + img_tag})
-
+        current_content = (client.get_test_case(product_id, target_id) or {}).get(api_field) or ""
     elif target_type == "incident":
-        inc = client.get_incident(product_id, target_id)
-        current_content = inc.get(api_field) or ""
-        client.update_incident(product_id, target_id, **{api_field: current_content + img_tag})
-
+        current_content = (client.get_incident(product_id, target_id) or {}).get(api_field) or ""
     elif target_type == "requirement":
-        req = client.get_requirement(product_id, target_id)
-        current_content = req.get(api_field) or ""
-        client.update_requirement(product_id, target_id, **{api_field: current_content + img_tag})
+        current_content = (client.get_requirement(product_id, target_id) or {}).get(api_field) or ""
+    else:  # task
+        current_content = (client.get_task(product_id, target_id) or {}).get(api_field) or ""
 
-    elif target_type == "task":
-        task = client.get_task(product_id, target_id)
-        current_content = task.get(api_field) or ""
-        client.update_task(product_id, target_id, **{api_field: current_content + img_tag})
+    # Step 2: upload the file
+    filename = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        binary_data = base64.b64encode(f.read()).decode("ascii")
 
+    doc = client.upload_document(product_id, filename, binary_data)
+    doc_id = doc.get("AttachmentId") if isinstance(doc, dict) else None
+    if not doc_id:
+        return "Failed to upload document — no AttachmentId returned."
+
+    # Step 3: build the <img> tag (escape user-provided text for the HTML field)
+    img_tag = f'<img src="/{product_id}/Attachment/{doc_id}.aspx" alt="{html.escape(filename, quote=True)}" />'
+    if caption:
+        img_tag = f'<p>{img_tag}</p><p><em>{html.escape(caption)}</em></p>'
     else:
-        return f"Unknown target_type '{target_type}'. Use: test_step, test_case, incident, requirement, task"
+        img_tag = f'<p>{img_tag}</p>'
+
+    # Step 4: append to the target field, preserving existing content
+    new_content = current_content + img_tag
+    if target_type == "test_step":
+        client.update_test_step(product_id, test_case_id, target_id, **{api_field: new_content})
+    elif target_type == "test_case":
+        client.update_test_case(product_id, target_id, **{api_field: new_content})
+    elif target_type == "incident":
+        client.update_incident(product_id, target_id, **{api_field: new_content})
+    elif target_type == "requirement":
+        client.update_requirement(product_id, target_id, **{api_field: new_content})
+    else:  # task
+        client.update_task(product_id, target_id, **{api_field: new_content})
 
     return (
         f"Image embedded successfully.\n\n"
@@ -1297,8 +1569,7 @@ def create_association(
     called "Test Coverage" — it drives the requirement's CoverageCount* metrics and the
     "Test Coverage" UI tab. Generic Associations show up only on the "Associations" tab
     and do NOT count toward coverage. Use list_test_coverage / list_covered_requirements
-    to read coverage; coverage writes happen in the Spira UI (Spira's REST API is
-    read-only for coverage in current versions).
+    to read coverage and create_test_coverage / delete_test_coverage to modify it.
 
     Use this tool for generic links such as:
     - bug <-> requirement (incident -> requirement)
@@ -1398,6 +1669,22 @@ def list_test_sets(product_id: int) -> str:
     return formatters.format_test_sets(test_sets)
 
 
+@mcp.tool()
+def get_test_set(product_id: int, test_set_id: int) -> str:
+    """Get a single test set with its status and per-status execution counts."""
+    client = _get_client()
+    ts = client.get_test_set(product_id, test_set_id)
+    return formatters.format_test_set(ts)
+
+
+@mcp.tool()
+def list_test_set_test_cases(product_id: int, test_set_id: int) -> str:
+    """List the test cases that belong to a test set (full details per test case)."""
+    client = _get_client()
+    test_cases = client.get_test_set_test_cases(product_id, test_set_id)
+    return formatters.format_test_cases(test_cases)
+
+
 # ──────────────────────────────────────────────
 #  Automation Hosts
 # ──────────────────────────────────────────────
@@ -1453,6 +1740,7 @@ TOOL_PRESETS = {
         "list_products", "get_product",
         "list_programs", "list_program_products", "list_milestones", "list_capabilities",
         "list_templates", "get_template", "list_artifact_types", "list_custom_properties",
+        "list_users", "list_components", "list_comments",
         "get_my_tasks", "get_my_incidents", "get_my_requirements", "get_my_test_cases", "get_my_test_sets",
         "list_releases", "get_release",
         "list_requirements", "get_requirement",
@@ -1461,12 +1749,14 @@ TOOL_PRESETS = {
         "list_test_cases", "get_test_case", "list_test_folders",
         "list_test_coverage", "list_covered_requirements",
         "list_test_runs", "get_test_run",
-        "list_risks", "list_test_sets", "list_automation_hosts",
+        "list_risks", "list_test_sets", "get_test_set", "list_test_set_test_cases",
+        "list_automation_hosts",
         "list_documents", "list_associations",
     ],
     "dev": [
         "list_products", "get_product",
         "get_my_tasks", "get_my_incidents", "get_my_requirements",
+        "list_users", "list_components", "list_comments", "add_comment",
         "list_releases", "get_release",
         "list_requirements", "get_requirement",
         "list_tasks", "get_task", "count_tasks", "update_task",
@@ -1478,15 +1768,17 @@ TOOL_PRESETS = {
     "qa": [
         "list_products", "get_product",
         "get_my_tasks", "get_my_incidents", "get_my_test_cases", "get_my_test_sets",
+        "list_users", "list_components", "list_comments", "add_comment",
         "list_releases", "get_release",
+        "add_test_cases_to_release", "remove_test_case_from_release",
         "list_requirements", "get_requirement",
         "list_tasks", "get_task", "count_tasks", "update_task",
         "list_incidents", "get_incident", "create_incident", "update_incident",
         "list_test_cases", "get_test_case", "create_test_case", "update_test_case", "list_test_folders",
-        "list_test_coverage", "list_covered_requirements",
+        "list_test_coverage", "list_covered_requirements", "create_test_coverage", "delete_test_coverage",
         "create_test_step", "update_test_step", "delete_test_step",
         "list_test_runs", "get_test_run", "create_test_run", "save_test_run_results", "record_test_run",
-        "list_test_sets",
+        "list_test_sets", "get_test_set", "list_test_set_test_cases",
         "upload_document", "attach_document", "attach_image_to_field", "list_documents",
         "create_association", "list_associations", "delete_association",
         "list_artifact_types", "list_custom_properties",
@@ -1502,9 +1794,19 @@ def _apply_tool_filter():
     - Preset names: "minimal", "read_only", "qa", "full"
     - Comma-separated tool names: "list_products,get_product,list_tasks"
     - Not set or "full": all tools enabled (default)
+
+    Unknown names are reported to stderr; a config that matches no tools at all
+    aborts startup instead of silently serving a zero-tool server (fix.md F11).
     """
     tools_config = os.environ.get("SPIRA_MCP_TOOLS", "").strip()
     if not tools_config or tools_config == "full":
+        return
+
+    try:
+        registered = mcp._tool_manager._tools
+    except AttributeError:
+        print("spira-mcp: tool filtering unavailable — mcp package internals changed; "
+              "running with all tools enabled.", file=sys.stderr)
         return
 
     # Check if it's a preset
@@ -1516,12 +1818,20 @@ def _apply_tool_filter():
     else:
         # Treat as comma-separated tool names
         allowed = set(t.strip() for t in tools_config.split(",") if t.strip())
+        for name in sorted(allowed - set(registered)):
+            print(f"spira-mcp: SPIRA_MCP_TOOLS entry {name!r} matches no tool — ignored. "
+                  f"(Presets: {', '.join(sorted(TOOL_PRESETS))})", file=sys.stderr)
+
+    if not allowed & set(registered):
+        raise SystemExit(
+            f"spira-mcp: SPIRA_MCP_TOOLS={tools_config!r} matches no tools — the server "
+            f"would start with zero tools. Valid presets: {', '.join(sorted(TOOL_PRESETS))}."
+        )
 
     # Remove tools not in the allowed set
-    all_tools = list(mcp._tool_manager._tools.keys())
-    for name in all_tools:
+    for name in list(registered):
         if name not in allowed:
-            del mcp._tool_manager._tools[name]
+            del registered[name]
 
 
 # ──────────────────────────────────────────────
