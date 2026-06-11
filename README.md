@@ -1,6 +1,6 @@
 # spira-mcp
 
-MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 56 tools.
+MCP server for [Inflectra Spira](https://www.inflectra.com/SpiraPlan/) (SpiraPlan / SpiraTest / SpiraTeam) with proper task filtering, pagination, and full CRUD support — 66 tools.
 
 ## Why this exists
 
@@ -10,14 +10,14 @@ The official `mcp-server-spira` package has critical limitations:
 |-------|:---:|:---:|
 | Tasks filtered by their own release | No — filters via parent requirement's release, misses orphaned tasks | **Yes** — filters by the task's own `ReleaseId` field |
 | Pagination | Hardcoded 500 rows, silently drops data | **Proper** — loops until all results fetched |
-| Search/filter on artifacts | Only on "specification" tools | **All** list tools accept filters (release, status, priority, owner) |
+| Search/filter on artifacts | Only on "specification" tools | Core list tools accept filters (release, status, priority, owner); big list tools accept `limit` |
 | Single-item retrieval | Only for products and releases | **All** artifact types (requirement, task, incident, test case, test run) |
 | Create/update artifacts | Only `create_build` and `record_test_run` | **Full CRUD** for requirements, tasks, incidents, test cases, test steps |
 | Per-step test results | Not supported | **Full support** — create run, fill per-step pass/fail + actual results |
 | Image embedding | Not supported | **`attach_image_to_field`** — inline `<img>` tags visible in Spira UI |
-| Test Coverage (Requirement ↔ Test Case) | Not surfaced | **`list_test_coverage` / `list_covered_requirements`** — read Spira's first-class coverage relationship (the one that drives coverage metrics) |
+| Test Coverage (Requirement ↔ Test Case) | Not surfaced | **Read and write** — `list_test_coverage` / `list_covered_requirements` / `create_test_coverage` / `delete_test_coverage` (Spira's first-class coverage relationship, the one that drives coverage metrics) |
 | Generic associations | Not supported | **`create_association`** — link any two artifacts (incident ↔ requirement, etc.) |
-| Custom properties | Raw IDs, no label resolution | **Indexed metadata + label resolution** — list values render as `Label (id)`, falsy values stay visible |
+| Custom properties | Raw IDs, no label resolution | **Full support** — reads render `Label (id)`; `custom_property_filters` on list tools and `custom_properties` on create/update tools resolve names/labels via template metadata |
 | Document management | Not supported | **Upload, attach, list** documents on any artifact |
 | Test case folders | Not supported | **`list_test_folders`** — browse hierarchy, move TCs between folders |
 | Test step IDs in output | Steps shown as ordinals only (Step 1, 2, 3) | **`TestStepId`** shown per step — enables precise updates |
@@ -72,16 +72,16 @@ Any MCP-compatible client can launch the server with `python3 -m spira_mcp`. Exa
 
 ### Tool Filtering (optional)
 
-By default all 56 tools are exposed. To limit which tools are available, set the `SPIRA_MCP_TOOLS` environment variable to a **preset name** or a **comma-separated list of tool names**.
+By default all 66 tools are exposed. To limit which tools are available, set the `SPIRA_MCP_TOOLS` environment variable to a **preset name** or a **comma-separated list of tool names**.
 
 **Presets:**
 
 | Preset | Tools | Description |
 |--------|:-----:|-------------|
-| `full` | 56 | All tools (default) |
-| `qa` | 43 | QA-focused: test cases, test runs, incidents, coverage, documents, associations |
-| `dev` | 22 | Dev-focused: tasks, requirements, incidents, risks, associations |
-| `read_only` | 36 | All list/get tools, no create/update/delete |
+| `full` | 66 | All tools (default) |
+| `qa` | 53 | QA-focused: test cases, test runs, incidents, coverage, comments, documents, associations |
+| `dev` | 26 | Dev-focused: tasks, requirements, incidents, comments, risks, associations |
+| `read_only` | 41 | All list/get tools, no create/update/delete |
 | `minimal` | 12 | Just list/get for core artifacts (products, releases, requirements, tasks, incidents, test cases) |
 
 **Using a preset:**
@@ -113,7 +113,7 @@ By default all 56 tools are exposed. To limit which tools are available, set the
 }
 ```
 
-## Available Tools (56)
+## Available Tools (66)
 
 ### Products
 - `list_products` — List all accessible products
@@ -128,8 +128,16 @@ By default all 56 tools are exposed. To limit which tools are available, set the
 ### Templates & Configuration
 - `list_templates` — List all product templates
 - `get_template` — Get template details
-- `list_artifact_types` — List artifact types (requirement types, incident types, etc.) for a template — use to discover valid type IDs
+- `list_artifact_types` — Artifact types AND template-specific statuses/priorities/importances/severities — THE discovery tool for valid IDs
 - `list_custom_properties` — Custom fields for one artifact type, with full option lists. Takes `artifact_type_name` (TestCase/Requirement/Task/Incident/Risk/Release/TestSet/TestStep) and either `template_id` or `product_id`. Resolves list-value IDs to their labels in artifact output.
+
+### Users & Components
+- `list_users` — Project members with user IDs, roles, emails — resolve names to owner_id
+- `list_components` — Product components (ComponentId + name)
+
+### Comments
+- `list_comments` — Comments on an incident, task, or requirement
+- `add_comment` — Add a comment to an incident, task, or requirement
 
 ### My Work
 - `get_my_tasks` — Tasks assigned to current user, across all products
@@ -141,6 +149,8 @@ By default all 56 tools are exposed. To limit which tools are available, set the
 ### Releases / Sprints
 - `list_releases` — List releases sorted by date (all types mixed), with `limit` param
 - `get_release` — Get single release details
+- `add_test_cases_to_release` — Map test cases into a release/sprint test plan
+- `remove_test_case_from_release` — Unmap a test case from a release
 
 ### Requirements
 - `list_requirements` — Search with filters (release, status, importance, owner)
@@ -177,8 +187,10 @@ Spira's first-class coverage relationship — the one that drives the requiremen
 
 - `list_test_coverage` — Test cases covering a requirement (with execution status of each)
 - `list_covered_requirements` — Requirements a test case covers
+- `create_test_coverage` — Add a coverage link (test case covers requirement)
+- `delete_test_coverage` — Remove a coverage link
 
-> Coverage is **read-only** through the Spira REST API in current Spira versions. To add or remove a coverage link, use the Spira UI's Test Coverage tab on the requirement (or the test case's Requirements tab).
+> Writes go through `POST`/`DELETE projects/{pid}/requirements/test-cases` with a `{RequirementId, TestCaseId}` body. (Coverage was long believed REST-read-only — that came from probing the per-requirement URL, which is GET-only and returns 405.)
 
 ### Test Steps
 - `create_test_step` — Add a new step to a test case
@@ -187,12 +199,14 @@ Spira's first-class coverage relationship — the one that drives the requiremen
 
 ### Test Sets
 - `list_test_sets` — List all test sets for a product (root-level + folder-nested, deduped)
+- `get_test_set` — Single test set with per-status execution counts
+- `list_test_set_test_cases` — Test cases inside a test set (full details)
 
 ### Test Runs
 - `list_test_runs` — List recent runs sorted by date
 - `get_test_run` — Get run with per-step results (status, actual result)
-- `create_test_run` — Create run shells from TC IDs with steps pre-populated
-- `save_test_run_results` — Save per-step pass/fail and actual result text
+- `create_test_run` — Preview run shells (step positions) for TC IDs — shells are not persisted
+- `save_test_run_results` — One-shot execute: creates a run from a test case, applies per-step pass/fail + actual results, saves (pass `test_case_id`)
 - `record_test_run` — Quick automated result (overall pass/fail, supports release and build)
 
 ### Documents & Images

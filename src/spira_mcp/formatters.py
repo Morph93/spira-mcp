@@ -1,5 +1,27 @@
 """Format Spira API responses into clean markdown for LLM consumption."""
 
+import html as _html
+import re as _re
+
+
+def _strip_html(text, limit=None):
+    """Strip rich-text HTML to plain text for LIST views (single-artifact views keep
+    full HTML). Saves tokens and keeps excerpts readable (fix.md F21)."""
+    if not text:
+        return ""
+    text = _re.sub(r"<br\s*/?>|</p>|</div>|</li>|</tr>", " ", text, flags=_re.I)
+    text = _re.sub(r"<[^>]+>", "", text)
+    text = _html.unescape(text)
+    text = _re.sub(r"\s+", " ", text).strip()
+    return text[:limit] if limit else text
+
+
+def _v(obj, key, default=""):
+    """Like obj.get(key, default), but also applies the default when the value is
+    an explicit None — Spira returns nulls, not missing keys (fix.md F16)."""
+    val = obj.get(key)
+    return default if val is None else val
+
 
 def _field(obj, key, label=None, prefix=""):
     """Extract a field value, return formatted string or empty string if missing/None."""
@@ -88,7 +110,7 @@ def format_products(products):
     for p in products:
         lines.append(f"- **PR:{p.get('ProjectId')}** — {p.get('Name')}")
         if p.get("Description"):
-            lines.append(f"  {p['Description'][:200]}")
+            lines.append(f"  {_strip_html(p['Description'], 200)}")
     return "\n".join(lines)
 
 
@@ -100,7 +122,8 @@ def format_product(p):
         _field(p, "Description"),
         _field(p, "CreationDate", "Created"),
         _field(p, "Website"),
-        _field(p, "ProjectGroupName", "Program"),
+        # RemoteProject has ProjectGroupId but no ProjectGroupName (fix.md F7)
+        _id_field(p, "ProjectGroupId", "Program", "PG:"),
     ]
     return "".join(parts)
 
@@ -126,7 +149,7 @@ def format_releases(releases):
             f"## Release [RL:{r.get('ReleaseId')}] — {r.get('Name')}\n"
             f"**Status:** {status} | **Type:** {rtype}\n"
             f"**Start Date:** {start} | **End Date:** {end}\n"
-            f"**Tasks:** {r.get('TaskCount', 0)} | **% Complete:** {r.get('PercentComplete', 0)}%\n"
+            f"**Tasks:** {_v(r, 'TaskCount', 0)} | **% Complete:** {_v(r, 'PercentComplete', 0)}%\n"
         )
     return "\n".join(lines)
 
@@ -139,11 +162,11 @@ def format_release(r):
     return (
         f"# Release [RL:{r.get('ReleaseId')}] — {r.get('Name')}\n\n"
         f"**Status:** {status} | **Type:** {rtype}\n"
-        f"**Version:** {r.get('VersionNumber', '')}\n"
+        f"**Version:** {_v(r, 'VersionNumber')}\n"
         f"**Start Date:** {(r.get('StartDate') or '')[:10]}\n"
         f"**End Date:** {(r.get('EndDate') or '')[:10]}\n"
-        f"**Tasks:** {r.get('TaskCount', 0)} | **% Complete:** {r.get('PercentComplete', 0)}%\n"
-        f"**Planned Effort:** {r.get('PlannedEffort', '')} | **Available Effort:** {r.get('AvailableEffort', '')}\n"
+        f"**Tasks:** {_v(r, 'TaskCount', 0)} | **% Complete:** {_v(r, 'PercentComplete', 0)}%\n"
+        f"**Planned Effort:** {_v(r, 'PlannedEffort', '-')} | **Available Effort:** {_v(r, 'AvailableEffort', '-')}\n"
         f"{_field(r, 'Description')}"
     )
 
@@ -166,7 +189,7 @@ def format_requirements(requirements):
             f"**Owner:** {r.get('OwnerName', 'Unassigned')}\n"
         )
         if r.get("Description"):
-            desc = r["Description"][:500].replace("\n", " ")
+            desc = _strip_html(r["Description"], 500)
             lines.append(f"**Description:** {desc}\n")
     return "\n".join(lines)
 
@@ -216,18 +239,34 @@ def format_tasks(tasks):
         status = TASK_STATUSES.get(t.get("TaskStatusId"), f"Status #{t.get('TaskStatusId')}")
         lines.append(
             f"## [TK:{t.get('TaskId')}] — {t.get('Name')}\n"
-            f"**Status:** {status} | **Priority:** {t.get('TaskPriorityName', '?')}\n"
-            f"**Owner:** {t.get('OwnerName', 'Unassigned')}\n"
-            f"**Release:** {t.get('ReleaseVersionNumber', 'Unassigned')} (RL:{t.get('ReleaseId', '?')})\n"
-            f"**Requirement:** {t.get('RequirementName', 'None')} (RQ:{t.get('RequirementId', '?')})\n"
+            f"**Status:** {status} | **Priority:** {_v(t, 'TaskPriorityName', '?')}\n"
+            f"**Owner:** {_v(t, 'OwnerName', 'Unassigned')}\n"
+            f"**Release:** {_task_release(t)}\n"
+            f"**Requirement:** {_task_requirement(t)}\n"
         )
         if t.get("EstimatedEffort") or t.get("ActualEffort"):
             lines.append(
-                f"**Estimated:** {t.get('EstimatedEffort', '-')} min | "
-                f"**Actual:** {t.get('ActualEffort', '-')} min | "
-                f"**Remaining:** {t.get('RemainingEffort', '-')} min\n"
+                f"**Estimated:** {_v(t, 'EstimatedEffort', '-')} min | "
+                f"**Actual:** {_v(t, 'ActualEffort', '-')} min | "
+                f"**Remaining:** {_v(t, 'RemainingEffort', '-')} min\n"
             )
     return "\n".join(lines)
+
+
+def _task_release(t):
+    """'2.1.0 (RL:6601)' or 'Unassigned' — never '(RL:None)'."""
+    rel_id = t.get("ReleaseId")
+    if rel_id is None:
+        return "Unassigned"
+    return f"{_v(t, 'ReleaseVersionNumber', '?')} (RL:{rel_id})"
+
+
+def _task_requirement(t):
+    """'Login flow (RQ:45236)' or 'None' — never '(RQ:None)'."""
+    req_id = t.get("RequirementId")
+    if req_id is None:
+        return "None"
+    return f"{_v(t, 'RequirementName', '?')} (RQ:{req_id})"
 
 
 def format_task(t, custom_meta=None):
@@ -237,17 +276,16 @@ def format_task(t, custom_meta=None):
     return (
         f"# Task [TK:{t.get('TaskId')}] — {t.get('Name')}\n\n"
         f"**Status:** {status}\n"
-        f"**Priority:** {t.get('TaskPriorityName', '?')}\n"
-        f"**Owner:** {t.get('OwnerName', 'Unassigned')}\n"
-        f"**Creator:** {t.get('CreatorName', '?')}\n"
-        f"**Release:** {t.get('ReleaseVersionNumber', 'Unassigned')} (RL:{t.get('ReleaseId', '?')})\n"
-        f"**Requirement:** {t.get('RequirementName', 'None')} (RQ:{t.get('RequirementId', '?')})\n"
+        f"**Priority:** {_v(t, 'TaskPriorityName', '?')}\n"
+        f"**Owner:** {_v(t, 'OwnerName', 'Unassigned')}\n"
+        f"**Release:** {_task_release(t)}\n"
+        f"**Requirement:** {_task_requirement(t)}\n"
         f"**Start Date:** {(t.get('StartDate') or '')[:10]}\n"
         f"**End Date:** {(t.get('EndDate') or '')[:10]}\n"
         f"**Created:** {(t.get('CreationDate') or '')[:10]}\n"
-        f"**Estimated:** {t.get('EstimatedEffort', '-')} min | "
-        f"**Actual:** {t.get('ActualEffort', '-')} min | "
-        f"**Remaining:** {t.get('RemainingEffort', '-')} min\n"
+        f"**Estimated:** {_v(t, 'EstimatedEffort', '-')} min | "
+        f"**Actual:** {_v(t, 'ActualEffort', '-')} min | "
+        f"**Remaining:** {_v(t, 'RemainingEffort', '-')} min\n"
         f"{_field(t, 'Description')}"
         f"{_custom_props(t, custom_meta=custom_meta)}"
     )
@@ -393,12 +431,15 @@ def format_test_runs(runs):
     lines = [f"# Test Runs ({len(runs)} total)\n"]
     for r in runs:
         exec_status = EXECUTION_STATUSES.get(r.get("ExecutionStatusId"), "?")
+        # RunnerName only exists on automated runs; manual runs carry TesterId (fix.md F7)
+        runner = r.get("RunnerName") or (
+            f"Tester #{r.get('TesterId')}" if r.get("TesterId") else "?")
         lines.append(
             f"## Run #{r.get('TestRunId')} — {r.get('Name', '?')}\n"
             f"**Status:** {exec_status} | "
             f"**Test Case:** TC:{r.get('TestCaseId', '?')}\n"
             f"**Date:** {(r.get('EndDate') or '')[:19]}\n"
-            f"**Runner:** {r.get('RunnerName', '?')}\n"
+            f"**Runner:** {runner}\n"
         )
     return "\n".join(lines)
 
@@ -412,7 +453,7 @@ def format_test_run(r):
         f"**Status:** {exec_status}\n",
         f"**Test Case:** TC:{r.get('TestCaseId', '?')}\n",
         f"**Type:** {'Manual' if r.get('TestRunTypeId') == 1 else 'Automated'}\n",
-        f"**Tester:** {r.get('TesterName', '?')}\n",
+        f"**Tester:** {r.get('TesterName') or r.get('TesterId', '?')}\n",
         f"**Release:** {r.get('ReleaseVersionNumber', '?')}\n",
         f"**Start:** {(r.get('StartDate') or '')[:19]}\n",
         f"**End:** {(r.get('EndDate') or '')[:19]}\n",
@@ -481,7 +522,10 @@ def format_test_folders(folders):
 
     for f in folders:
         indent = "  " * _depth(f)
-        count = f.get("CountTestCases", 0)
+        # RemoteTestCaseFolder has no CountTestCases — sum the per-status counts (fix.md F7)
+        count = sum(f.get(k) or 0 for k in (
+            "CountPassed", "CountFailed", "CountCaution",
+            "CountBlocked", "CountNotRun", "CountNotApplicable"))
         lines.append(
             f"{indent}- **Folder #{f.get('TestCaseFolderId', '?')}** — {f.get('Name', '?')} "
             f"({count} test cases)\n"
@@ -534,9 +578,11 @@ def format_programs(programs):
         return "No programs found."
     lines = ["# Programs\n"]
     for p in programs:
+        # v7 returns ProgramId; ProjectGroupId kept as fallback for v6-era shapes (fix.md F7)
+        pg_id = p.get("ProgramId", p.get("ProjectGroupId", "?"))
         lines.append(
-            f"- **PG:{p.get('ProjectGroupId', '?')}** — {p.get('Name', '?')}\n"
-            f"  {(p.get('Description') or '')[:200]}\n"
+            f"- **PG:{pg_id}** — {p.get('Name', '?')}\n"
+            f"  {_strip_html(p.get('Description'), 200)}\n"
         )
     return "\n".join(lines)
 
@@ -546,9 +592,10 @@ def format_milestones(milestones):
         return "No milestones found."
     lines = [f"# Milestones ({len(milestones)} total)\n"]
     for m in milestones:
+        # v7 field is StatusName, not MilestoneStatusName (fix.md F7)
         lines.append(
             f"- **ML:{m.get('MilestoneId', '?')}** — {m.get('Name', '?')}\n"
-            f"  **Status:** {m.get('MilestoneStatusName', '?')} | "
+            f"  **Status:** {m.get('StatusName', m.get('MilestoneStatusName', '?'))} | "
             f"**Start:** {(m.get('StartDate') or '')[:10]} | "
             f"**End:** {(m.get('EndDate') or '')[:10]}\n"
         )
@@ -591,18 +638,86 @@ def format_template(t):
     )
 
 
+def _lookup_item_id(item):
+    """Find the *Id value in a template lookup row (RequirementStatusId, PriorityId, …)."""
+    for k, v in item.items():
+        if k.endswith("Id") and k != "ProjectTemplateId":
+            return v
+    return "?"
+
+
 def format_artifact_types(types_by_artifact):
+    """Render {artifact: {category: [items]}} — types, statuses, priorities,
+    importances, severities per artifact (template-specific IDs)."""
     if not types_by_artifact:
         return "No artifact types found."
-    lines = ["# Artifact Types\n"]
-    for artifact, types in types_by_artifact.items():
+    lines = ["# Artifact Types & Template Values\n"]
+    for artifact, categories in types_by_artifact.items():
         lines.append(f"\n## {artifact}\n")
-        for t in (types if isinstance(types, list) else [types]):
-            lines.append(
-                f"- **ID {t.get('ArtifactTypeId', t.get('RequirementTypeId', t.get('TestCaseTypeId', t.get('TaskTypeId', t.get('IncidentTypeId', t.get('RiskTypeId', '?'))))))}** "
-                f"— {t.get('Name', '?')}\n"
-            )
+        if isinstance(categories, list):  # legacy shape: bare list of types
+            categories = {"types": categories}
+        for category, items in categories.items():
+            lines.append(f"\n### {category}\n")
+            for t in (items if isinstance(items, list) else [items]):
+                lines.append(f"- **ID {_lookup_item_id(t)}** — {t.get('Name', '?')}\n")
     return "\n".join(lines)
+
+
+def format_users(users):
+    if not users:
+        return "No users found."
+    lines = [f"# Project Users ({len(users)} total)\n"]
+    for u in users:
+        name = u.get("FullName") or f"{_v(u, 'FirstName')} {_v(u, 'LastName')}".strip() or _v(u, "UserName", "?")
+        lines.append(
+            f"- **UserId {u.get('UserId', '?')}** — {name} ({_v(u, 'UserName', '?')}) | "
+            f"**Role:** {_v(u, 'ProjectRoleName', '?')} | **Email:** {_v(u, 'EmailAddress', '?')}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_components(components):
+    if not components:
+        return "No components found."
+    lines = [f"# Components ({len(components)} total)\n"]
+    for c in components:
+        active = "" if c.get("IsActive", True) else " (inactive)"
+        lines.append(f"- **ComponentId {c.get('ComponentId', '?')}** — {c.get('Name', '?')}{active}\n")
+    return "\n".join(lines)
+
+
+def format_comments(label, comments):
+    if not comments:
+        return f"No comments on {label}."
+    lines = [f"# Comments on {label} ({len(comments)} total)\n"]
+    for cm in comments:
+        author = cm.get("UserName") or f"UserId {cm.get('UserId', '?')}"
+        lines.append(
+            f"- **{author}** ({(cm.get('CreationDate') or '')[:16]}): "
+            f"{_strip_html(cm.get('Text'))}\n"
+        )
+    return "\n".join(lines)
+
+
+def format_test_set(ts):
+    if not ts:
+        return "Test set not found."
+    counts = []
+    for key, label in (("CountPassed", "passed"), ("CountFailed", "failed"),
+                       ("CountBlocked", "blocked"), ("CountCaution", "caution"),
+                       ("CountNotRun", "not run"), ("CountNotApplicable", "n/a")):
+        val = ts.get(key)
+        if val:
+            counts.append(f"{val} {label}")
+    return (
+        f"# Test Set [TX:{ts.get('TestSetId', '?')}] — {ts.get('Name', '?')}\n\n"
+        f"**Status:** {_v(ts, 'TestSetStatusName', '?')}\n"
+        f"**Execution:** {', '.join(counts) if counts else 'no results'}\n"
+        f"**Release:** {_v(ts, 'ReleaseVersionNumber', 'Unassigned')}\n"
+        f"**Planned Date:** {(ts.get('PlannedDate') or '')[:10]}\n"
+        f"**Owner:** {_v(ts, 'OwnerName', 'Unassigned')}\n"
+        f"{_field(ts, 'Description')}"
+    )
 
 
 def format_custom_properties(artifact_type_name, fields):
@@ -731,11 +846,20 @@ def format_test_sets(test_sets):
         return "No test sets found."
     lines = [f"# Test Sets ({len(test_sets)} total)\n"]
     for ts in test_sets:
-        exec_status = EXECUTION_STATUSES.get(ts.get("ExecutionStatusId"), "?")
+        # RemoteTestSet has no ExecutionStatusId — execution state lives in the
+        # per-status Count* fields (fix.md F7).
+        counts = []
+        for key, label in (("CountPassed", "passed"), ("CountFailed", "failed"),
+                           ("CountBlocked", "blocked"), ("CountCaution", "caution"),
+                           ("CountNotRun", "not run"), ("CountNotApplicable", "n/a")):
+            val = ts.get(key)
+            if val:
+                counts.append(f"{val} {label}")
+        exec_summary = ", ".join(counts) if counts else "no results"
         lines.append(
             f"## [TX:{ts.get('TestSetId', '?')}] — {ts.get('Name', '?')}\n"
             f"**Status:** {ts.get('TestSetStatusName', '?')} | "
-            f"**Execution:** {exec_status}\n"
+            f"**Execution:** {exec_summary}\n"
             f"**Planned Date:** {(ts.get('PlannedDate') or '')[:10]}\n"
             f"**Owner:** {ts.get('OwnerName', 'Unassigned')}\n"
         )
@@ -751,9 +875,10 @@ def format_automation_hosts(hosts):
         return "No automation hosts found."
     lines = [f"# Automation Hosts ({len(hosts)} total)\n"]
     for h in hosts:
+        # v7 field is Active; IsActive kept as fallback for older instances (fix.md F7)
         lines.append(
             f"- **AH:{h.get('AutomationHostId', '?')}** — {h.get('Name', '?')}\n"
             f"  **Token:** {h.get('Token', '?')} | "
-            f"**Active:** {h.get('IsActive', '?')}\n"
+            f"**Active:** {h.get('Active', h.get('IsActive', '?'))}\n"
         )
     return "\n".join(lines)
