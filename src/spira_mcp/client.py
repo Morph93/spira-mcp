@@ -278,6 +278,12 @@ class SpiraClient:
     #  Pagination helpers
     # ──────────────────────────────────────────────
 
+    # Most Spira collection endpoints page via starting_row plus number_of_rows.
+    # Once a window starts past the final row they return an empty batch, not an error.
+    # Reading a short batch therefore means the last page has been reached.
+    # Pagination here treats both signals as terminal to stay portable across endpoints.
+    # Hence the two exit conditions in each loop below.
+
     def _paginate_get(self, path, params=None, start_key="starting_row", size_key="number_of_rows", max_rows=None):
         """Paginate a GET endpoint until fewer than page_size results are returned.
 

@@ -1727,6 +1727,11 @@ def create_build(
 #  Tool filtering
 # ──────────────────────────────────────────────
 
+# Minimal means minimal: resist growing that preset — it exists for tiny contexts.
+# Only "full" bypasses filtering entirely (the None sentinel, not an actual list).
+# Read_only must never gain a mutating tool; automation relies on that promise.
+# Presets are allowlists, not permissions — the API key still gates real access.
+# Hence new tools land in "full" automatically but join other presets explicitly.
 TOOL_PRESETS = {
     "minimal": [
         "list_products", "get_product",
